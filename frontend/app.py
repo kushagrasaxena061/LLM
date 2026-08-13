@@ -1,9 +1,6 @@
 # frontend/app.py
 """Interactive Streamlit dashboard for the custom LLM & RAG platform."""
 
-# frontend/app.py
-"""Interactive Streamlit dashboard for the custom LLM & RAG platform."""
-
 import sys
 from pathlib import Path
 
@@ -21,17 +18,7 @@ from tokenizer.bpe import BPETokenizer
 from inference.generate import generate_text
 from rag.vector_store import SimpleVectorStore
 from rag.pipeline import RAGPipeline
-
-
-import streamlit as st
-import torch
-from configs.base_config import env_config
-from model.config import GPTConfig
-from model.transformer import GPT
-from tokenizer.bpe import BPETokenizer
-from inference.generate import generate_text
-from rag.vector_store import SimpleVectorStore
-from rag.pipeline import RAGPipeline
+from prompt_engineering.optimizer import PromptOptimizer
 
 # Page Config
 st.set_page_config(
@@ -48,7 +35,8 @@ def load_platform_components():
     model.eval()
     
     tokenizer = BPETokenizer(vocab_size=260)
-    tokenizer.train("The quick brown fox jumps over the lazy dog. Streamlit brings Python apps to life.")
+    # Train on a slightly larger corpus so the optimizer has enough vocab to encode our test string
+    tokenizer.train("The quick brown fox jumps over the lazy dog. Streamlit brings Python apps to life. please could you kindly help me write a python script to parse json")
     
     vector_store = SimpleVectorStore(embedding_dim=32)
     docs = [
@@ -60,15 +48,17 @@ def load_platform_components():
     vector_store.add_texts(docs, embeddings)
     
     rag_pipeline = RAGPipeline(vector_store, model, tokenizer, env_config.device)
-    return model, tokenizer, rag_pipeline
+    optimizer = PromptOptimizer(tokenizer)
+    
+    return model, tokenizer, rag_pipeline, optimizer
 
-model, tokenizer, rag_pipeline = load_platform_components()
+model, tokenizer, rag_pipeline, optimizer = load_platform_components()
 
 # UI Layout
 st.title("🤖 Custom LLM & RAG Studio")
-st.markdown(f"**Hardware Device Active:** `{env_config.device.upper()}` | **Architecture:** Decoder-Only GPT with LoRA, INT8 Quantization, & RAG")
+st.markdown(f"**Hardware Device Active:** `{env_config.device.upper()}` | **Architecture:** Decoder-Only GPT with LoRA, INT8 Quantization, RAG & Optimization")
 
-tab1, tab2, tab3 = st.tabs(["✨ Text Generation", "📚 RAG Query", "📊 System Analytics"])
+tab1, tab2, tab3, tab4 = st.tabs(["✨ Text Generation", "📚 RAG Query", "📊 System Analytics", "🛠️ Prompt Optimizer"])
 
 with tab1:
     st.subheader("Autoregressive Text Generation")
@@ -111,3 +101,34 @@ with tab3:
         "Context Length": model.config.context_length,
         "Running Device": env_config.device
     })
+
+with tab4:
+    st.subheader("Prompt Optimization Engine")
+    st.markdown("Strips stop words and semantically empty phrases to save GPU compute and reduce production costs.")
+    raw_prompt = st.text_area("Enter raw user prompt:", value="Please could you kindly help me write a python script to parse json?")
+    
+    if st.button("Optimize Prompt"):
+        result = optimizer.optimize_prompt(raw_prompt)
+        
+        col1, col2 = st.columns(2)
+        with col1:
+            st.info("**Original Prompt**")
+            st.write(result["original_prompt"])
+            st.metric("Original Tokens", result["original_tokens"])
+            
+        with col2:
+            st.success("**Optimized Prompt**")
+            st.write(result["optimized_prompt"])
+            st.metric("Optimized Tokens", result["optimized_tokens"], delta=f"-{result['tokens_saved']} tokens", delta_color="inverse")
+        
+        st.divider()
+        st.markdown("### 💸 Production Impact")
+        col3, col4, col5 = st.columns(3)
+        col3.metric("Tokens Saved (%)", f"{result['savings_percentage']:.1f}%")
+        
+        # Simulated metrics for latency and cost based on standard enterprise API pricing
+        latency_saved = result['tokens_saved'] * 0.8  # Assume ~0.8ms per token
+        cost_saved = result['tokens_saved'] * 0.0002   # Assume $0.0002 per token
+        
+        col4.metric("Latency Saved (Est.)", f"{latency_saved:.2f} ms")
+        col5.metric("Cost Saved (Est.)", f"${cost_saved:.4f}")
