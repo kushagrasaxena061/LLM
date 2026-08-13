@@ -14,11 +14,11 @@ from inference.generate import generate_text
 from rag.vector_store import SimpleVectorStore
 from rag.pipeline import RAGPipeline
 from security.guardrails import SecurityGuard
+from observability.middleware import TelemetryMiddleware
 from utils.logger import get_logger
 
 logger = get_logger(__name__)
 
-# Global instances loaded during lifespan startup
 model = None
 tokenizer = None
 rag_pipeline = None
@@ -26,11 +26,9 @@ security_guard = None
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Initializes and loads model weights and tokenizer into memory on server boot."""
     global model, tokenizer, rag_pipeline, security_guard
     logger.info("Initializing API server components...")
     
-    # FIX: Increased context_length from 64 to 256 to handle larger RAG prompts
     config = GPTConfig(vocab_size=260, context_length=256, d_model=32, n_layers=2, n_heads=2)
     model = GPT(config).to(env_config.device)
     model.eval()
@@ -57,6 +55,9 @@ app = FastAPI(
     lifespan=lifespan
 )
 
+# Inject the Observability Middleware
+app.add_middleware(TelemetryMiddleware)
+
 class GenerateRequest(BaseModel):
     prompt: str = Field(..., description="Input text prompt for generation")
     max_new_tokens: int = Field(default=20, ge=1, le=100, description="Number of tokens to generate")
@@ -68,19 +69,15 @@ class RAGRequest(BaseModel):
 
 @app.get("/health")
 def health_check():
-    """System health check endpoint."""
     return {"status": "healthy", "device": env_config.device}
 
 @app.post("/generate")
 def generate(request: GenerateRequest):
-    """Generates text autoregressively using the base model."""
-    # 1. Security Interception
     security_check = security_guard.validate_input(request.prompt)
     if not security_check["is_safe"]:
         logger.warning("API Blocked Malicious Request", pattern=security_check["matched_pattern"])
         raise HTTPException(status_code=403, detail="Prompt Injection Detected. Request Blocked.")
         
-    # 2. Use the sanitized prompt (PII removed)
     safe_prompt = security_check["sanitized_prompt"]
     
     try:
@@ -99,8 +96,6 @@ def generate(request: GenerateRequest):
 
 @app.post("/rag/query")
 def rag_query(request: RAGRequest):
-    """Executes a Retrieval-Augmented Generation query."""
-    # 1. Security Interception for RAG
     security_check = security_guard.validate_input(request.query)
     if not security_check["is_safe"]:
         logger.warning("API Blocked Malicious RAG Request")
