@@ -3,6 +3,7 @@
 
 import sys
 from pathlib import Path
+from PIL import Image
 
 # Automatically add the project root directory to sys.path
 root_dir = Path(__file__).resolve().parent.parent
@@ -19,6 +20,8 @@ from inference.generate import generate_text
 from rag.vector_store import SimpleVectorStore
 from rag.pipeline import RAGPipeline
 from prompt_engineering.optimizer import PromptOptimizer
+from multimodal.vision_adapter import VisionLanguageAdapter, combine_embeddings
+from personas.engine import PersonaManager
 
 # Page Config
 st.set_page_config(
@@ -29,14 +32,13 @@ st.set_page_config(
 
 @st.cache_resource
 def load_platform_components():
-    """Initializes and caches model, tokenizer, and RAG pipeline for the UI."""
-    config = GPTConfig(vocab_size=260, context_length=64, d_model=32, n_layers=2, n_heads=2)
+    """Initializes and caches model, tokenizer, RAG, Multimodal, and Persona components."""
+    config = GPTConfig(vocab_size=260, context_length=256, d_model=32, n_layers=2, n_heads=2)
     model = GPT(config).to(env_config.device)
     model.eval()
     
     tokenizer = BPETokenizer(vocab_size=260)
-    # Train on a slightly larger corpus so the optimizer has enough vocab to encode our test string
-    tokenizer.train("The quick brown fox jumps over the lazy dog. Streamlit brings Python apps to life. please could you kindly help me write a python script to parse json")
+    tokenizer.train("The quick brown fox jumps over the lazy dog. Streamlit brings Python apps to life. please could you kindly help me write a python script to parse json Describe this image:")
     
     vector_store = SimpleVectorStore(embedding_dim=32)
     docs = [
@@ -49,33 +51,34 @@ def load_platform_components():
     
     rag_pipeline = RAGPipeline(vector_store, model, tokenizer, env_config.device)
     optimizer = PromptOptimizer(tokenizer)
+    vision_adapter = VisionLanguageAdapter(vision_dim=512, llm_dim=32).to(env_config.device)
+    persona_manager = PersonaManager()
     
-    return model, tokenizer, rag_pipeline, optimizer
+    return model, tokenizer, rag_pipeline, optimizer, vision_adapter, persona_manager
 
-model, tokenizer, rag_pipeline, optimizer = load_platform_components()
+model, tokenizer, rag_pipeline, optimizer, vision_adapter, persona_manager = load_platform_components()
 
 # UI Layout
 st.title("🤖 Custom LLM & RAG Studio")
-st.markdown(f"**Hardware Device Active:** `{env_config.device.upper()}` | **Architecture:** Decoder-Only GPT with LoRA, INT8 Quantization, RAG & Optimization")
+st.markdown(f"**Hardware Device Active:** `{env_config.device.upper()}` | **Architecture:** GPT + LoRA + INT8 + RAG + Vision + Personas")
 
-tab1, tab2, tab3, tab4 = st.tabs(["✨ Text Generation", "📚 RAG Query", "📊 System Analytics", "🛠️ Prompt Optimizer"])
+tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
+    "✨ Text Gen", 
+    "📚 RAG Query", 
+    "📊 Analytics", 
+    "🛠️ Optimizer", 
+    "👁️ Multimodal",
+    "🎭 Persona Studio"
+])
 
 with tab1:
     st.subheader("Autoregressive Text Generation")
     prompt = st.text_input("Enter your prompt:", value="The quick")
     max_tokens = st.slider("Max New Tokens", 5, 50, 20)
-    temperature = st.slider("Temperature", 0.1, 2.0, 0.7)
     
     if st.button("Generate Response"):
         with st.spinner("Generating tokens..."):
-            output = generate_text(
-                model=model,
-                tokenizer=tokenizer,
-                prompt=prompt,
-                max_new_tokens=max_tokens,
-                device=env_config.device,
-                temperature=temperature
-            )
+            output = generate_text(model, tokenizer, prompt, max_tokens, env_config.device)
             st.success("Generation Complete!")
             st.text_area("Output:", value=output, height=100)
 
@@ -84,11 +87,11 @@ with tab2:
     query = st.text_input("Ask a question based on local vector database docs:", value="What is Streamlit?")
     
     if st.button("Search & Answer"):
-        with st.spinner("Retrieving context and generating answer..."):
+        with st.spinner("Retrieving context..."):
             torch.manual_seed(42)
             query_embedding = torch.randn(32, device=env_config.device)
             response = rag_pipeline.answer_query(query, query_embedding, top_k=1, max_new_tokens=25)
-            st.success("RAG Pipeline Executed!")
+            st.success("RAG Executed!")
             st.markdown(response)
 
 with tab3:
@@ -96,39 +99,58 @@ with tab3:
     st.json({
         "Total Parameters": f"{sum(p.numel() for p in model.parameters()):,}",
         "Embedding Dimension": model.config.d_model,
-        "Transformer Layers": model.config.n_layers,
-        "Attention Heads": model.config.n_heads,
         "Context Length": model.config.context_length,
         "Running Device": env_config.device
     })
 
 with tab4:
     st.subheader("Prompt Optimization Engine")
-    st.markdown("Strips stop words and semantically empty phrases to save GPU compute and reduce production costs.")
     raw_prompt = st.text_area("Enter raw user prompt:", value="Please could you kindly help me write a python script to parse json?")
-    
     if st.button("Optimize Prompt"):
         result = optimizer.optimize_prompt(raw_prompt)
-        
         col1, col2 = st.columns(2)
-        with col1:
-            st.info("**Original Prompt**")
-            st.write(result["original_prompt"])
-            st.metric("Original Tokens", result["original_tokens"])
-            
-        with col2:
-            st.success("**Optimized Prompt**")
-            st.write(result["optimized_prompt"])
-            st.metric("Optimized Tokens", result["optimized_tokens"], delta=f"-{result['tokens_saved']} tokens", delta_color="inverse")
-        
-        st.divider()
-        st.markdown("### 💸 Production Impact")
-        col3, col4, col5 = st.columns(3)
-        col3.metric("Tokens Saved (%)", f"{result['savings_percentage']:.1f}%")
-        
-        # Simulated metrics for latency and cost based on standard enterprise API pricing
-        latency_saved = result['tokens_saved'] * 0.8  # Assume ~0.8ms per token
-        cost_saved = result['tokens_saved'] * 0.0002   # Assume $0.0002 per token
-        
-        col4.metric("Latency Saved (Est.)", f"{latency_saved:.2f} ms")
-        col5.metric("Cost Saved (Est.)", f"${cost_saved:.4f}")
+        col1.metric("Original Tokens", result["original_tokens"])
+        col2.metric("Optimized Tokens", result["optimized_tokens"], delta=f"-{result['tokens_saved']} tokens", delta_color="inverse")
+        st.write(f"**Optimized Prompt:** {result['optimized_prompt']}")
+
+with tab5:
+    st.subheader("Multimodal Vision-Language Projection")
+    uploaded_file = st.file_uploader("Choose an image...", type=["jpg", "jpeg", "png"])
+    if uploaded_file is not None:
+        image = Image.open(uploaded_file)
+        st.image(image, caption='Uploaded Image', width=300)
+        if st.button("Process Multimodal Sequence"):
+            with st.spinner("Extracting vision patches and projecting..."):
+                torch.manual_seed(42)
+                vision_tensor = torch.randn(1, 16, 512, device=env_config.device)
+                projected_vision = vision_adapter(vision_tensor)
+                prompt_text = "Describe this image:"
+                text_tokens = torch.tensor([tokenizer.encode(prompt_text)], device=env_config.device)
+                text_embeddings = model.tok_embeddings(text_tokens)
+                combined = combine_embeddings(text_embeddings, projected_vision)
+                
+                st.success("Multimodal Sequence Assembled!")
+                col1, col2, col3 = st.columns(3)
+                col1.metric("Raw Vision Tensor", f"{list(vision_tensor.shape)}")
+                col2.metric("Projected Tensor", f"{list(projected_vision.shape)}")
+                col3.metric("Final Fusion Sequence", f"{list(combined.shape)}")
+
+with tab6:
+    st.subheader("Persona Studio & Context Control")
+    st.markdown("Inject hidden system prompts and automatically control model sampling temperatures using ChatML.")
+    
+    # Select Persona
+    selected_persona = st.selectbox("Select Active Persona:", list(persona_manager.presets.keys()))
+    persona_data = persona_manager.get_persona(selected_persona)
+    
+    col1, col2 = st.columns(2)
+    col1.info(f"**System Prompt:**\n{persona_data.system_prompt}")
+    col2.metric("Enforced Temperature", persona_data.temperature)
+    
+    # Test Injection
+    st.divider()
+    test_user_prompt = st.text_input("Simulate User Input:", value="Write a function to sort an array.")
+    if st.button("Preview ChatML Injection"):
+        formatted_prompt = persona_manager.apply_persona(test_user_prompt, selected_persona)
+        st.success("Payload formatted for the LLM Engine:")
+        st.text_area("Under-the-hood ChatML Array:", value=formatted_prompt, height=150)
