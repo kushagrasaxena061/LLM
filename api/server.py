@@ -13,6 +13,7 @@ from tokenizer.bpe import BPETokenizer
 from inference.generate import generate_text
 from rag.vector_store import SimpleVectorStore
 from rag.pipeline import RAGPipeline
+from security.guardrails import SecurityGuard
 from utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -21,14 +22,16 @@ logger = get_logger(__name__)
 model = None
 tokenizer = None
 rag_pipeline = None
+security_guard = None
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Initializes and loads model weights and tokenizer into memory on server boot."""
-    global model, tokenizer, rag_pipeline
+    global model, tokenizer, rag_pipeline, security_guard
     logger.info("Initializing API server components...")
     
-    config = GPTConfig(vocab_size=260, context_length=64, d_model=32, n_layers=2, n_heads=2)
+    # FIX: Increased context_length from 64 to 256 to handle larger RAG prompts
+    config = GPTConfig(vocab_size=260, context_length=256, d_model=32, n_layers=2, n_heads=2)
     model = GPT(config).to(env_config.device)
     model.eval()
     
@@ -42,6 +45,8 @@ async def lifespan(app: FastAPI):
     vector_store.add_texts(docs, embeddings)
     
     rag_pipeline = RAGPipeline(vector_store, model, tokenizer, env_config.device)
+    security_guard = SecurityGuard()
+    
     logger.info("API server startup complete.")
     yield
 
@@ -69,16 +74,25 @@ def health_check():
 @app.post("/generate")
 def generate(request: GenerateRequest):
     """Generates text autoregressively using the base model."""
+    # 1. Security Interception
+    security_check = security_guard.validate_input(request.prompt)
+    if not security_check["is_safe"]:
+        logger.warning("API Blocked Malicious Request", pattern=security_check["matched_pattern"])
+        raise HTTPException(status_code=403, detail="Prompt Injection Detected. Request Blocked.")
+        
+    # 2. Use the sanitized prompt (PII removed)
+    safe_prompt = security_check["sanitized_prompt"]
+    
     try:
         output = generate_text(
             model=model,
             tokenizer=tokenizer,
-            prompt=request.prompt,
+            prompt=safe_prompt,
             max_new_tokens=request.max_new_tokens,
             device=env_config.device,
             temperature=request.temperature
         )
-        return {"prompt": request.prompt, "generated_text": output}
+        return {"prompt": safe_prompt, "generated_text": output}
     except Exception as e:
         logger.error("Generation failed", error=str(e))
         raise HTTPException(status_code=500, detail=str(e))
@@ -86,17 +100,25 @@ def generate(request: GenerateRequest):
 @app.post("/rag/query")
 def rag_query(request: RAGRequest):
     """Executes a Retrieval-Augmented Generation query."""
+    # 1. Security Interception for RAG
+    security_check = security_guard.validate_input(request.query)
+    if not security_check["is_safe"]:
+        logger.warning("API Blocked Malicious RAG Request")
+        raise HTTPException(status_code=403, detail="Prompt Injection Detected. Request Blocked.")
+        
+    safe_query = security_check["sanitized_prompt"]
+
     try:
         torch.manual_seed(42)
         query_embedding = torch.randn(32, device=env_config.device)
         
         output = rag_pipeline.answer_query(
-            query=request.query,
+            query=safe_query,
             query_embedding=query_embedding,
             top_k=1,
             max_new_tokens=request.max_new_tokens
         )
-        return {"query": request.query, "rag_response": output}
+        return {"query": safe_query, "rag_response": output}
     except Exception as e:
         logger.error("RAG query failed", error=str(e))
         raise HTTPException(status_code=500, detail=str(e))
