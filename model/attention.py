@@ -1,10 +1,11 @@
 # model/attention.py
-"""Multi-Head Causal Self-Attention mechanism."""
+"""Multi-Head Causal Self-Attention mechanism with KV Cache support."""
 
 import torch
 import torch.nn as nn
 from torch.nn import functional as F
 import math
+from typing import Optional, Tuple
 from model.config import GPTConfig
 from model.rope import apply_rotary_emb
 
@@ -24,33 +25,54 @@ class MultiHeadAttention(nn.Module):
         )
         self.register_buffer("bias", mask)
 
-    def forward(self, x: torch.Tensor, freqs_cis: torch.Tensor) -> torch.Tensor:
+    def forward(
+        self, 
+        x: torch.Tensor, 
+        freqs_cis: torch.Tensor,
+        layer_past: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
+        use_cache: bool = False
+    ) -> Tuple[torch.Tensor, Optional[Tuple[torch.Tensor, torch.Tensor]]]:
         B, T, C = x.size()
         
         qkv = self.qkv_proj(x)
         q, k, v = qkv.split(self.d_model, dim=2)
         
         # 1. Reshape but DO NOT transpose yet! 
-        # Layout remains (Batch, Time, Heads, HeadDim) so RoPE math works.
+        # Layout: (Batch, Time, Heads, HeadDim)
         q = q.view(B, T, self.n_heads, self.head_dim)
         k = k.view(B, T, self.n_heads, self.head_dim)
         v = v.view(B, T, self.n_heads, self.head_dim)
         
-        # 2. Apply RoPE geometry
-        q, k = apply_rotary_emb(q, k, freqs_cis[:T])
+        # 2. Apply RoPE geometry BEFORE transposing
+        q, k = apply_rotary_emb(q, k, freqs_cis)
         
-        # 3. NOW transpose for the Attention matrix multiplication
-        # Layout becomes (Batch, Heads, Time, HeadDim)
+        # 3. Transpose to (Batch, Heads, Time, HeadDim) for caching and attention
         q = q.transpose(1, 2)
         k = k.transpose(1, 2)
         v = v.transpose(1, 2)
         
+        # 4. KV Cache logic
+        if layer_past is not None:
+            past_k, past_v = layer_past
+            # Concatenate past keys/values with the current token's keys/values
+            k = torch.cat([past_k, k], dim=-2)
+            v = torch.cat([past_v, v], dim=-2)
+            
+        present = (k, v) if use_cache else None
+        
+        # Calculate attention scores
+        # q shape: (B, Heads, T_current, Head_Dim)
+        # k shape: (B, Heads, T_total, Head_Dim)
         att = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(self.head_dim))
-        att = att.masked_fill(self.bias[:, :, :T, :T] == 0, float('-inf'))
+        
+        # Only apply causal mask if we are processing more than 1 token (Prefill phase)
+        if T > 1:
+            att = att.masked_fill(self.bias[:, :, :T, :T] == 0, float('-inf'))
+            
         att = F.softmax(att, dim=-1)
         att = self.attn_dropout(att)
         
         y = att @ v
         y = y.transpose(1, 2).contiguous().view(B, T, C)
         
-        return self.out_proj(y)
+        return self.out_proj(y), present
