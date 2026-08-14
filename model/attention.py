@@ -1,5 +1,5 @@
 # model/attention.py
-"""Multi-Head Causal Self-Attention mechanism with KV Cache support."""
+"""Multi-Head Causal Self-Attention mechanism with KV Cache and Explainability support."""
 
 import torch
 import torch.nn as nn
@@ -24,6 +24,9 @@ class MultiHeadAttention(nn.Module):
             1, 1, config.context_length, config.context_length
         )
         self.register_buffer("bias", mask)
+        
+        # State variable for the Transformer Explorer (Explainability)
+        self.attention_weights = None
 
     def forward(
         self, 
@@ -37,8 +40,7 @@ class MultiHeadAttention(nn.Module):
         qkv = self.qkv_proj(x)
         q, k, v = qkv.split(self.d_model, dim=2)
         
-        # 1. Reshape but DO NOT transpose yet! 
-        # Layout: (Batch, Time, Heads, HeadDim)
+        # 1. Reshape but DO NOT transpose yet!
         q = q.view(B, T, self.n_heads, self.head_dim)
         k = k.view(B, T, self.n_heads, self.head_dim)
         v = v.view(B, T, self.n_heads, self.head_dim)
@@ -46,7 +48,7 @@ class MultiHeadAttention(nn.Module):
         # 2. Apply RoPE geometry BEFORE transposing
         q, k = apply_rotary_emb(q, k, freqs_cis)
         
-        # 3. Transpose to (Batch, Heads, Time, HeadDim) for caching and attention
+        # 3. Transpose to (Batch, Heads, Time, HeadDim)
         q = q.transpose(1, 2)
         k = k.transpose(1, 2)
         v = v.transpose(1, 2)
@@ -54,23 +56,22 @@ class MultiHeadAttention(nn.Module):
         # 4. KV Cache logic
         if layer_past is not None:
             past_k, past_v = layer_past
-            # Concatenate past keys/values with the current token's keys/values
             k = torch.cat([past_k, k], dim=-2)
             v = torch.cat([past_v, v], dim=-2)
             
         present = (k, v) if use_cache else None
         
         # Calculate attention scores
-        # q shape: (B, Heads, T_current, Head_Dim)
-        # k shape: (B, Heads, T_total, Head_Dim)
         att = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(self.head_dim))
         
-        # Only apply causal mask if we are processing more than 1 token (Prefill phase)
         if T > 1:
             att = att.masked_fill(self.bias[:, :, :T, :T] == 0, float('-inf'))
             
         att = F.softmax(att, dim=-1)
         att = self.attn_dropout(att)
+        
+        # EXPLAINABILITY HOOK: Save the raw attention probabilities before they are consumed!
+        self.attention_weights = att.detach()
         
         y = att @ v
         y = y.transpose(1, 2).contiguous().view(B, T, C)

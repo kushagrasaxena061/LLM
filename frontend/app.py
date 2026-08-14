@@ -22,6 +22,7 @@ from rag.pipeline import RAGPipeline
 from prompt_engineering.optimizer import PromptOptimizer
 from multimodal.vision_adapter import VisionLanguageAdapter, combine_embeddings
 from personas.engine import PersonaManager
+from explainability.visualizer import AttentionVisualizer
 
 # Page Config
 st.set_page_config(
@@ -32,7 +33,7 @@ st.set_page_config(
 
 @st.cache_resource
 def load_platform_components():
-    """Initializes and caches model, tokenizer, RAG, Multimodal, and Persona components."""
+    """Initializes and caches all platform components."""
     config = GPTConfig(vocab_size=260, context_length=256, d_model=32, n_layers=2, n_heads=2)
     model = GPT(config).to(env_config.device)
     model.eval()
@@ -53,29 +54,30 @@ def load_platform_components():
     optimizer = PromptOptimizer(tokenizer)
     vision_adapter = VisionLanguageAdapter(vision_dim=512, llm_dim=32).to(env_config.device)
     persona_manager = PersonaManager()
+    visualizer = AttentionVisualizer(model, tokenizer, env_config.device)
     
-    return model, tokenizer, rag_pipeline, optimizer, vision_adapter, persona_manager
+    return model, tokenizer, rag_pipeline, optimizer, vision_adapter, persona_manager, visualizer
 
-model, tokenizer, rag_pipeline, optimizer, vision_adapter, persona_manager = load_platform_components()
+model, tokenizer, rag_pipeline, optimizer, vision_adapter, persona_manager, visualizer = load_platform_components()
 
 # UI Layout
 st.title("🤖 Custom LLM & RAG Studio")
 st.markdown(f"**Hardware Device Active:** `{env_config.device.upper()}` | **Architecture:** GPT + LoRA + INT8 + RAG + Vision + Personas")
 
-tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
+tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
     "✨ Text Gen", 
     "📚 RAG Query", 
     "📊 Analytics", 
     "🛠️ Optimizer", 
     "👁️ Multimodal",
-    "🎭 Persona Studio"
+    "🎭 Personas",
+    "🔍 Transformer Explorer"
 ])
 
 with tab1:
     st.subheader("Autoregressive Text Generation")
     prompt = st.text_input("Enter your prompt:", value="The quick")
     max_tokens = st.slider("Max New Tokens", 5, 50, 20)
-    
     if st.button("Generate Response"):
         with st.spinner("Generating tokens..."):
             output = generate_text(model, tokenizer, prompt, max_tokens, env_config.device)
@@ -85,7 +87,6 @@ with tab1:
 with tab2:
     st.subheader("Retrieval-Augmented Generation (RAG)")
     query = st.text_input("Ask a question based on local vector database docs:", value="What is Streamlit?")
-    
     if st.button("Search & Answer"):
         with st.spinner("Retrieving context..."):
             torch.manual_seed(42)
@@ -137,20 +138,35 @@ with tab5:
 
 with tab6:
     st.subheader("Persona Studio & Context Control")
-    st.markdown("Inject hidden system prompts and automatically control model sampling temperatures using ChatML.")
-    
-    # Select Persona
     selected_persona = st.selectbox("Select Active Persona:", list(persona_manager.presets.keys()))
     persona_data = persona_manager.get_persona(selected_persona)
-    
     col1, col2 = st.columns(2)
     col1.info(f"**System Prompt:**\n{persona_data.system_prompt}")
     col2.metric("Enforced Temperature", persona_data.temperature)
     
-    # Test Injection
     st.divider()
     test_user_prompt = st.text_input("Simulate User Input:", value="Write a function to sort an array.")
     if st.button("Preview ChatML Injection"):
         formatted_prompt = persona_manager.apply_persona(test_user_prompt, selected_persona)
         st.success("Payload formatted for the LLM Engine:")
         st.text_area("Under-the-hood ChatML Array:", value=formatted_prompt, height=150)
+
+with tab7:
+    st.subheader("Transformer Explorer & Attention Heatmaps")
+    st.markdown("Peer inside the mathematical black box. See exactly which tokens the model focuses on during generation.")
+    
+    explore_text = st.text_input("Enter a short phrase to analyze:", value="The quick brown fox jumps.")
+    head_to_view = st.slider("Select Attention Head:", min_value=0, max_value=model.config.n_heads - 1, value=0)
+    
+    if st.button("Generate Attention Heatmap"):
+        with st.spinner("Extracting weights from Layer 0..."):
+            tokens, attn_matrix = visualizer.extract_attention(explore_text)
+            fig = visualizer.plot_attention_heatmap(tokens, attn_matrix, head_idx=head_to_view)
+            
+            st.success("Attention Matrix Extracted!")
+            st.pyplot(fig)
+            
+            with st.expander("How to read this heatmap?"):
+                st.write("The **Y-axis (Query)** represents the current token being processed.")
+                st.write("The **X-axis (Key)** represents the historical tokens it is 'looking at'.")
+                st.write("Brighter colors mean higher mathematical attention (closer to **1.0**). Notice how tokens cannot look at future tokens due to Causal Masking!")
