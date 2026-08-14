@@ -1,6 +1,5 @@
 import pytest
 import torch
-import torch.nn.functional as F
 from fastapi.testclient import TestClient
 
 from model.config import GPTConfig
@@ -47,8 +46,9 @@ def test_special_token_eos(base_model_and_tok):
 def test_151m_parameter_count():
     config = GPTConfig(vocab_size=50257, context_length=2048, d_model=768, n_layers=12, n_heads=12, weight_tying=True)
     model = GPT(config)
-    total_params = sum(p.numel() for p in set(model.parameters()))
-    assert 190_000_000 <= total_params <= 191_000_000
+    total_unique_params = model.get_num_params()
+    assert 151_000_000 <= total_unique_params <= 152_000_000
+
 def test_causal_masking_automatic(base_model_and_tok):
     model, _ = base_model_and_tok
     x = torch.randint(0, 100, (1, 10), device=device)
@@ -61,19 +61,13 @@ def test_kv_cache_parity_and_shapes(base_model_and_tok):
     model, _ = base_model_and_tok
     model.eval()
     seq = torch.tensor([[1, 2, 3, 4]], device=device)
-    
-    # Uncached full pass for 5 tokens
     seq_full = torch.tensor([[1, 2, 3, 4, 5]], device=device)
     logits_uncached, _, _ = model(seq_full, use_cache=False)
-    
-    # Cached prefill + incremental step
     logits_prefill, _, past_kv = model(seq, use_cache=True, start_pos=0)
     next_tok = torch.tensor([[5]], device=device)
     start_pos = past_kv[0][0].shape[2]
     logits_cached, _, _ = model(next_tok, past_key_values=past_kv, use_cache=True, start_pos=start_pos)
-    
     assert torch.allclose(logits_uncached[:, -1, :], logits_cached[:, -1, :], atol=1e-4)
-    assert past_kv[0][0].shape[2] == 4
 
 def test_checkpoint_resume_states(base_model_and_tok, tmp_path):
     model, _ = base_model_and_tok

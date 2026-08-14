@@ -1,21 +1,19 @@
-# MODEL_CARD.md: MiniGPT-151M
-
-## Model Details
-- **Architecture:** Custom Decoder-Only Transformer
-- **Parameter Count:** 151,862,784 parameters
+# MiniGPT-151M Model Card
+## Architecture
+- **Parameters:** 151,862,784
 - **Hidden Dimension (d_model):** 768
 - **Transformer Layers:** 12
-- **Attention Heads:** 12
+- **Attention Heads:** 12 (64 dim/head)
 - **Positional Encoding:** Rotary Position Embeddings (RoPE)
 - **Normalization:** Pre-RMSNorm
 - **Activation Function:** SwiGLU
-- **Precision:** FP32 Baseline, with Post-Training Dynamic INT8 Quantization (2.65x memory reduction)
+- **Weight Tying:** Enabled
 
-## Intended Use
-- Educational, research, and edge-device deployment exploration.
-- Serving as a sandbox for Hybrid RAG, LoRA parameter-efficient fine-tuning, and adversarial security evaluation.
-
-## Performance Characteristics
-- **Time-To-First-Token (TTFT):** ~336 ms (Apple Silicon MPS / CPU)
-- **Inter-Token Latency (ITL):** ~5.8 ms
-- **Throughput:** ~35.8 tokens/sec (Autoregressive KV-Cached Decoding)
+## Infrastructure Capabilities
+- Custom BPE Tokenizer (Lossless UTF-8)
+- $O(N)$ KV-Cache Autoregressive Generation
+- Hybrid RAG (Dense + BM25 + Reciprocal Rank Fusion + CrossEncoder Reranking)
+- LoRA Parameter-Efficient Fine-Tuning
+- INT8 Post-Training Quantization
+- Multimodal Vision-Language Projection Adapter
+- OWASP Security Guardrails & PII Sanitization

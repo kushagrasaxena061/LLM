@@ -24,7 +24,6 @@ class ChatSessionManager:
         tags_to_remove = ["<|im_start|>", "<|im_end|>", "<|endoftext|>", "system\n", "user\n", "assistant\n"]
         for tag in tags_to_remove:
             text = text.replace(tag, "")
-        text = text.replace("", "")
         return text.strip()
 
     def build_chatml_prompt(self, persona_name: str = "General Assistant") -> str:
@@ -56,11 +55,6 @@ class ChatSessionManager:
             stop_tokens=["<|im_end|>", "<|endoftext|>"]
         )
         
-        if "<|im_start|>assistant\n" in full_out:
-            assistant_response = full_out.split("<|im_start|>assistant\n")[-1]
-        else:
-            assistant_response = full_out[len(prompt):] if full_out.startswith(prompt) else full_out
-            
-        assistant_response = self.clean_output(assistant_response)
-        self.add_message("assistant", assistant_response)
-        return assistant_response
+        cleaned = self.clean_output(full_out)
+        self.add_message("assistant", cleaned)
+        return cleaned

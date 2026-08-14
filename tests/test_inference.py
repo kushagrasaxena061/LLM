@@ -11,7 +11,7 @@ from inference.generate import generate_text
 def test_generation_pipeline():
     """Verifies that the trained or untrained model can execute text generation without crashing."""
     config = GPTConfig(
-        vocab_size=260,
+        vocab_size=300,
         context_length=32,
         d_model=32,
         n_layers=2,
@@ -22,7 +22,7 @@ def test_generation_pipeline():
     model = GPT(config).to(env_config.device)
     
     # Train a tiny tokenizer for testing
-    tokenizer = BPETokenizer(vocab_size=260)
+    tokenizer = BPETokenizer(vocab_size=300)
     tokenizer.train("The quick brown fox jumps over the lazy dog.")
     
     # Run generation
