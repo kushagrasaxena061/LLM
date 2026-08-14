@@ -1,50 +1,42 @@
-# fine_tuning/lora.py
-"""Low-Rank Adaptation (LoRA) module for parameter-efficient fine-tuning."""
-
-import math
 import torch
 import torch.nn as nn
-from typing import Optional
+import math
 
-class LoRALinear(nn.Module):
-    def __init__(self, original_linear: nn.Linear, rank: int = 4, alpha: float = 16):
-        """
-        Wraps an existing linear layer with LoRA A and B matrices.
-        
-        Args:
-            original_linear: The frozen base layer (e.g., Q or V projection).
-            rank (int): The low rank dimension (r).
-            alpha (float): Scaling hyperparameter.
-        """
+class LoRALayer(nn.Module):
+    def __init__(self, original_layer: nn.Linear, rank: int = 4, alpha: int = 16):
         super().__init__()
-        self.in_features = original_linear.in_features
-        self.out_features = original_linear.out_features
-        
-        # 1. Freeze the original base weights
-        self.weight = original_linear.weight
-        self.weight.requires_grad = False
-        self.bias = original_linear.bias
-        if self.bias is not None:
-            self.bias.requires_grad = False
+        self.original = original_layer
+        self.original.weight.requires_grad = False
+        if getattr(self.original, 'bias', None) is not None:
+            self.original.bias.requires_grad = False
             
-        # 2. Initialize LoRA matrices A and B
-        self.rank = rank
-        self.alpha = alpha
+        self.lora_A = nn.Parameter(torch.zeros(rank, original_layer.in_features))
+        self.lora_B = nn.Parameter(torch.zeros(original_layer.out_features, rank))
         self.scaling = alpha / rank
-        
-        # Matrix A is initialized with a normal distribution
-        self.lora_A = nn.Parameter(torch.randn(rank, self.in_features) * (1.0 / math.sqrt(rank)))
-        # Matrix B is initialized to zeros so the initial adaptation delta (BA) is zero
-        self.lora_B = nn.Parameter(torch.zeros(self.out_features, rank))
-        
+        nn.init.kaiming_uniform_(self.lora_A, a=math.sqrt(5))
+        nn.init.zeros_(self.lora_B)
+
+    @property
+    def weight(self): return self.original.weight
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """
-        Computes: W_0(x) + (B @ A(x)) * scaling
-        """
-        # Base model forward path (frozen weights)
-        base_out = nn.functional.linear(x, self.weight, self.bias)
-        
-        # LoRA adaptation path (trainable low-rank matrices)
-        lora_out = (x @ self.lora_A.T) @ self.lora_B.T
-        
+        base_out = self.original(x)
+        lora_out = (x @ self.lora_A.transpose(0, 1)) @ self.lora_B.transpose(0, 1)
         return base_out + lora_out * self.scaling
+
+LoRALinear = LoRALayer
+
+def inject_lora_to_model(model, rank: int = 4, alpha: int = 16, target_modules=['w_q', 'w_v']):
+    # Completely freeze all base model parameters FIRST
+    for param in model.parameters():
+        param.requires_grad = False
+        
+    for name, module in model.named_modules():
+        if isinstance(module, nn.Linear):
+            for target in target_modules:
+                if target in name:
+                    parent_name = '.'.join(name.split('.')[:-1])
+                    child_name = name.split('.')[-1]
+                    parent = model.get_submodule(parent_name) if parent_name else model
+                    setattr(parent, child_name, LoRALayer(module, rank, alpha))
+    return model

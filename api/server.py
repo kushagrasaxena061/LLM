@@ -1,10 +1,10 @@
 # api/server.py
-"""Comprehensive FastAPI server exposing all MiniGPT Studio engineering engines."""
+"""Production-grade FastAPI server for MiniGPT Studio with all 24 feature endpoints."""
 
 import string
 import time
 from contextlib import asynccontextmanager
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 import torch
@@ -21,13 +21,13 @@ from security.guardrails import SecurityGuard
 from evaluation.safety import SafetyEvaluator
 from evaluation.embeddings import EmbeddingEngine
 from evaluation.model_comparator import ModelComparator
+from multimodal.vision_adapter import VisionLanguageAdapter
 from api.hardening import APIHardeningMiddleware
 from observability.middleware import TelemetryMiddleware
 from utils.logger import get_logger
 
 logger = get_logger(__name__)
 
-# Global instances
 model = None
 tokenizer = None
 rag_pipeline = None
@@ -35,36 +35,34 @@ security_guard = None
 safety_evaluator = None
 embedding_engine = None
 chat_manager = None
+vision_adapter = None
 startup_timestamp = time.time()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global model, tokenizer, rag_pipeline, security_guard, safety_evaluator, embedding_engine, chat_manager
+    global model, tokenizer, rag_pipeline, security_guard, safety_evaluator, embedding_engine, chat_manager, vision_adapter
     logger.info("Initializing MiniGPT Studio API services...")
     
-    # 1. Initialize Model
     config = GPTConfig(vocab_size=300, context_length=256, d_model=32, n_layers=2, n_heads=2)
     model = GPT(config).to(env_config.device)
     model.eval()
     
-    # 2. Tokenizer
     tokenizer = BPETokenizer(vocab_size=300)
     full_vocab = "The quick brown fox jumps over the lazy dog. FastAPI is a modern web framework. " + string.ascii_letters + string.punctuation + string.digits
     tokenizer.train(full_vocab)
     
-    # 3. RAG Pipeline
+    embedding_engine = EmbeddingEngine(model)
     vector_store = SimpleVectorStore(embedding_dim=32)
     docs = ["FastAPI handles our secure backend by acting as the API layer.", "Streamlit handles the frontend interface."]
     torch.manual_seed(42)
-    embeddings = torch.randn(2, 32, device=env_config.device)
+    embeddings = torch.stack([embedding_engine.extract_sequence_embedding(torch.tensor([tokenizer.encode(d)], device=env_config.device))[0] for d in docs]).detach()
     vector_store.add_texts(docs, embeddings)
     rag_pipeline = RAGPipeline(vector_store, model, tokenizer, env_config.device)
     
-    # 4. Auxiliary Engines
     security_guard = SecurityGuard()
     safety_evaluator = SafetyEvaluator()
-    embedding_engine = EmbeddingEngine(model)
     chat_manager = ChatSessionManager(model, tokenizer, device=env_config.device)
+    vision_adapter = VisionLanguageAdapter(vision_dim=512, llm_dim=32).to(env_config.device)
     
     logger.info("MiniGPT Studio API startup complete.")
     yield
@@ -72,15 +70,13 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="MiniGPT Studio 151M Platform API",
     version="1.0.0",
-    description="Production-grade API for Transformer inference, RAG, LoRA, Quantization, and Observability.",
+    description="Production API with all architectural, security, and explainability endpoints.",
     lifespan=lifespan
 )
 
-# Register Middlewares (Outermost first)
 app.add_middleware(APIHardeningMiddleware)
 app.add_middleware(TelemetryMiddleware)
 
-# --- Pydantic Request Models ---
 class GenerateRequest(BaseModel):
     prompt: str = Field(..., max_length=2000)
     max_new_tokens: int = Field(default=20, ge=1, le=100)
@@ -101,12 +97,14 @@ class TokenizeRequest(BaseModel):
 class EmbeddingsRequest(BaseModel):
     texts: List[str]
 
-class SafetyRequest(BaseModel):
-    prompt: str
-    context: Optional[str] = None
-    completion: Optional[str] = None
+class AttentionRequest(BaseModel):
+    text: str
+    layer_idx: int = 0
+    head_idx: int = 0
 
-# --- API Endpoints ---
+class SecurityInspectRequest(BaseModel):
+    prompt: str
+
 @app.get("/health")
 def health_check():
     return {
@@ -119,7 +117,6 @@ def health_check():
 
 @app.get("/model/inspect")
 def inspect_model():
-    """Returns dynamic model configuration and architectural parameter counts."""
     total_params = sum(p.numel() for p in model.parameters())
     trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     return {
@@ -132,15 +129,11 @@ def inspect_model():
         "n_heads": model.config.n_heads,
         "head_dim": model.config.head_dim,
         "vocab_size": model.config.vocab_size,
-        "context_length": model.config.context_length,
-        "norm_type": "RMSNorm",
-        "activation": "SwiGLU",
-        "position_encoding": "RoPE (Rotary Embeddings)"
+        "context_length": model.config.context_length
     }
 
 @app.get("/model/compare")
 def compare_models():
-    """Profiles Base FP32 vs LoRA vs INT8 quantization."""
     return ModelComparator.profile_configuration(model.config, device=env_config.device)
 
 @app.post("/generate")
@@ -148,33 +141,53 @@ def generate(request: GenerateRequest):
     security_check = security_guard.validate_input(request.prompt)
     if not security_check["is_safe"]:
         raise HTTPException(status_code=403, detail="Prompt Injection Detected.")
-    try:
-        output = generate_text(
-            model=model,
-            tokenizer=tokenizer,
-            prompt=security_check["sanitized_prompt"],
-            max_new_tokens=request.max_new_tokens,
-            device=env_config.device,
-            temperature=request.temperature
-        )
-        return {"prompt": request.prompt, "generated_text": output}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    output = generate_text(
+        model=model,
+        tokenizer=tokenizer,
+        prompt=security_check["sanitized_prompt"],
+        max_new_tokens=request.max_new_tokens,
+        device=env_config.device,
+        temperature=request.temperature
+    )
+    return {"prompt": request.prompt, "generated_text": output}
 
 @app.post("/chat")
 def chat(request: ChatRequest):
     security_check = security_guard.validate_input(request.message)
     if not security_check["is_safe"]:
         raise HTTPException(status_code=403, detail="Prompt Injection Detected in Chat.")
-    try:
-        response = chat_manager.respond(
-            user_message=security_check["sanitized_prompt"],
-            persona_name=request.persona,
-            max_new_tokens=request.max_new_tokens
-        )
-        return {"response": response, "history": chat_manager.history}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    response = chat_manager.respond(
+        user_message=security_check["sanitized_prompt"],
+        persona_name=request.persona,
+        max_new_tokens=request.max_new_tokens
+    )
+    return {"response": response, "history": chat_manager.history}
+
+@app.post("/transformer/attention")
+def extract_attention(request: AttentionRequest):
+    token_ids = tokenizer.encode(request.text)
+    if not token_ids:
+        token_ids = [0]
+    idx = torch.tensor([token_ids], dtype=torch.long, device=env_config.device)
+    
+    with torch.no_grad():
+        _, _, _, attentions = model(idx, return_attention=True)
+        
+    layer = min(request.layer_idx, len(attentions) - 1)
+    head = min(request.head_idx, attentions[layer].shape[1] - 1)
+    
+    # [1, n_heads, T, T] -> [T, T]
+    attn_matrix = attentions[layer][0, head].cpu().tolist()
+    token_labels = [tokenizer.decode([t]) for t in token_ids]
+    
+    return {
+        "tokens": token_labels,
+        "token_ids": token_ids,
+        "sequence_length": len(token_ids),
+        "layer": layer,
+        "head": head,
+        "attention_matrix": attn_matrix
+    }
 
 @app.post("/tokenizer/analyze")
 def analyze_tokenizer(request: TokenizeRequest):
@@ -199,7 +212,6 @@ def extract_embeddings(request: EmbeddingsRequest):
         ids = torch.tensor([tokenizer.encode(t)], device=env_config.device)
         vec = embedding_engine.extract_sequence_embedding(ids)[0]
         embeddings_list.append(vec.cpu())
-        
     stacked = torch.stack(embeddings_list)
     sim_matrix = embedding_engine.compute_similarity_matrix(stacked).tolist()
     pca_pts = embedding_engine.compute_pca_2d(stacked)
@@ -214,26 +226,28 @@ def rag_query(request: RAGRequest):
     security_check = security_guard.validate_input(request.query)
     if not security_check["is_safe"]:
         raise HTTPException(status_code=403, detail="Prompt Injection Detected.")
-    try:
-        query_embedding = torch.randn(32, device=env_config.device)
-        output = rag_pipeline.answer_query(
-            query=security_check["sanitized_prompt"],
-            query_embedding=query_embedding,
-            top_k=1,
-            max_new_tokens=request.max_new_tokens
-        )
-        return {"query": request.query, "rag_response": output}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    query_ids = torch.tensor([tokenizer.encode(security_check["sanitized_prompt"])], device=env_config.device)
+    query_embedding = embedding_engine.extract_sequence_embedding(query_ids)[0].detach()
+    output = rag_pipeline.answer_query(
+        query=security_check["sanitized_prompt"],
+        query_embedding=query_embedding,
+        top_k=1,
+        max_new_tokens=request.max_new_tokens
+    )
+    return {"query": request.query, "rag_response": output}
 
-@app.post("/safety/evaluate")
-def evaluate_safety(request: SafetyRequest):
-    harm_eval = safety_evaluator.evaluate_harmfulness(request.prompt)
-    hallucination_eval = {}
-    if request.context and request.completion:
-        hallucination_eval = safety_evaluator.evaluate_hallucination(request.context, request.completion)
+@app.post("/security/inspect")
+def inspect_security(request: SecurityInspectRequest):
+    sec_res = security_guard.validate_input(request.prompt)
+    harm_res = safety_evaluator.evaluate_harmfulness(request.prompt)
+    
+    is_safe = sec_res["is_safe"] and not harm_res["is_harmful"]
+    final_action = "ALLOW" if is_safe else ("BLOCK" if not sec_res["is_safe"] else "FLAG")
+    
     return {
         "prompt": request.prompt,
-        "harm_evaluation": harm_eval,
-        "hallucination_evaluation": hallucination_eval
+        "sanitized_prompt": sec_res["sanitized_prompt"],
+        "prompt_injection_detected": not sec_res["is_safe"],
+        "harm_evaluation": harm_res,
+        "final_action": final_action
     }

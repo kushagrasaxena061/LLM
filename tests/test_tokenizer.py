@@ -48,7 +48,7 @@ def test_bpe_tokenizer():
     training_corpus = "aaabdaaabac" * 10 
     
     # We start with 256 base bytes. Let's add 4 merges, making vocab = 260
-    tokenizer = BPETokenizer(vocab_size=260)
+    tokenizer = BPETokenizer(vocab_size=270)
     tokenizer.train(training_corpus)
     
     test_string = "aaabdaaabac"

@@ -16,14 +16,14 @@ def test_causal_masking():
     freqs_cis = precompute_freqs_cis(dim=8, end=8)
     
     # Pass freqs_cis into the forward pass
-    y, _ = attention(x, freqs_cis)
+    y, _, _ = attention(x, freqs_cis)
     
     assert y.shape == x.shape
     print(f"\n✅ Attention output shape verified: {y.shape}")
 
     x_modified = x.clone()
     x_modified[:, 7, :] = torch.randn(16)
-    y_modified, _ = attention(x_modified, freqs_cis)
+    y_modified, _, _ = attention(x_modified, freqs_cis)
     
     assert torch.allclose(y[:, 3, :], y_modified[:, 3, :])
     print("✅ Causal masking successfully prevented information leakage from the future.")

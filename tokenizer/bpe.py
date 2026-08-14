@@ -1,118 +1,113 @@
-# tokenizer/bpe.py
-"""Byte-Pair Encoding (BPE) Tokenizer implementation."""
-
+import re
+from typing import Dict, List, Tuple
 from tokenizer.base import BaseTokenizer
-from utils.logger import get_logger
 
-logger = get_logger(__name__)
-
-def get_stats(ids: list[int]) -> dict[tuple[int, int], int]:
-    """
-    Counts the frequencies of adjacent pairs of tokens.
-    Example: [1, 2, 1, 2, 3] -> {(1, 2): 2, (2, 1): 1, (2, 3): 1}
-    """
-    counts = {}
-    for pair in zip(ids, ids[1:]):
-        counts[pair] = counts.get(pair, 0) + 1
-    return counts
-
-def merge(ids: list[int], pair: tuple[int, int], idx: int) -> list[int]:
-    """
-    Replaces all consecutive occurrences of `pair` in `ids` with the new token `idx`.
-    Example: merge([1, 2, 3, 1, 2], (1, 2), 4) -> [4, 3, 4]
-    """
-    newids = []
-    i = 0
-    while i < len(ids):
-        # If we find the pair, replace it with the new index
-        if i < len(ids) - 1 and ids[i] == pair[0] and ids[i+1] == pair[1]:
-            newids.append(idx)
-            i += 2 # Skip the next token because we merged it
-        else:
-            newids.append(ids[i])
-            i += 1
-    return newids
+SPECIAL_TOKENS = {'<|endoftext|>': 0, '<|im_start|>': 1, '<|im_end|>': 2, '<|pad|>': 3, '<|unk|>': 4}
 
 class BPETokenizer(BaseTokenizer):
-    def __init__(self, vocab_size: int):
-        """
-        Initializes the BPE tokenizer.
-        Args:
-            vocab_size: The target number of total tokens. Must be >= 256.
-        """
-        if vocab_size < 256:
-            raise ValueError("Vocab size must be at least 256 to cover all UTF-8 bytes.")
-            
+    def __init__(self, vocab_size: int = 300):
+        super().__init__()
         self.target_vocab_size = vocab_size
-        self.num_merges = vocab_size - 256
-        
-        # The dictionary that stores our learned merges: e.g., (101, 102) -> 256
-        self.merges: dict[tuple[int, int], int] = {}
-        
-        # The vocabulary mapping token IDs to their actual byte sequences
-        # Initialize with the standard 256 UTF-8 bytes
-        self.vocab: dict[int, bytes] = {i: bytes([i]) for i in range(256)}
-        
-    def train(self, text: str):
-        """
-        Trains the tokenizer on a corpus of text, learning the most common pairs.
-        """
-        logger.info(f"Training BPE Tokenizer for {self.num_merges} merges...")
-        
-        # 1. Convert raw string into a list of UTF-8 byte integers (0-255)
-        text_bytes = text.encode("utf-8")
-        ids = list(text_bytes)
-        
-        # 2. Iteratively merge the most common pairs
-        for i in range(self.num_merges):
-            stats = get_stats(ids)
-            if not stats:
-                break # No more pairs to merge
-                
-            # Find the pair with the highest count
-            best_pair = max(stats, key=stats.get)
-            
-            # Create a new token ID (starting at 256, then 257, etc.)
-            new_id = 256 + i
-            
-            # Record the merge
-            self.merges[best_pair] = new_id
-            
-            # Record the new byte sequence in our vocabulary
-            self.vocab[new_id] = self.vocab[best_pair[0]] + self.vocab[best_pair[1]]
-            
-            # Execute the merge on our training data
-            ids = merge(ids, best_pair, new_id)
-            
-        logger.info("BPE Training complete", final_vocab_size=self.vocab_size)
+        self.special_tokens = dict(SPECIAL_TOKENS)
+        self.inverse_special_tokens = {v: k for k, v in self.special_tokens.items()}
+        self.vocab: Dict[int, bytes] = {}
+        self.inverse_vocab: Dict[bytes, int] = {}
+        self.merges: Dict[Tuple[int, int], int] = {}
+        self._init_vocab()
 
-    def encode(self, text: str) -> list[int]:
-        """Translates text into BPE token IDs."""
-        text_bytes = text.encode("utf-8")
-        ids = list(text_bytes)
-        
-        # We must apply the merges in the exact same order we learned them
-        while len(ids) >= 2:
-            stats = get_stats(ids)
-            # Find the pair in our current text that was merged earliest during training
-            # If none of the pairs in the text are in our learned merges, we are done
-            pair = min(stats.keys(), key=lambda p: self.merges.get(p, float("inf")))
-            
-            if pair not in self.merges:
-                break # Nothing else to merge
-                
-            # Apply the merge
-            ids = merge(ids, pair, self.merges[pair])
-            
-        return ids
-
-    def decode(self, ids: list[int]) -> str:
-        """Translates BPE token IDs back into text."""
-        # 1. Look up the bytes for each ID
-        text_bytes = b"".join(self.vocab[idx] for idx in ids)
-        # 2. Decode the bytes back to a UTF-8 string, replacing bad characters if necessary
-        return text_bytes.decode("utf-8", errors="replace")
+    def _init_vocab(self):
+        offset = len(self.special_tokens)
+        for i in range(256):
+            b = bytes([i])
+            token_id = offset + i
+            self.vocab[token_id] = b
+            self.inverse_vocab[b] = token_id
 
     @property
-    def vocab_size(self) -> int:
-        return len(self.vocab)
+    def vocab_size(self) -> int: return len(self.vocab) + len(self.special_tokens)
+
+    def train(self, text: str):
+        num_merges = self.target_vocab_size - self.vocab_size
+        if num_merges <= 0: return
+        offset = len(self.special_tokens)
+        
+        # FIX: Ensure base bytes are strictly shifted so self.vocab[] lookup never fails
+        tokens = [b + offset for b in text.encode('utf-8')]
+        for _ in range(num_merges):
+            counts = {}
+            for pair in zip(tokens, tokens[1:]): counts[pair] = counts.get(pair, 0) + 1
+            if not counts: break
+            pair = max(counts, key=counts.get)
+            idx = self.vocab_size
+            new_ids = []
+            i = 0
+            while i < len(tokens):
+                if i < len(tokens) - 1 and tokens[i] == pair[0] and tokens[i + 1] == pair[1]:
+                    new_ids.append(idx); i += 2
+                else:
+                    new_ids.append(tokens[i]); i += 1
+            tokens = new_ids
+            self.merges[pair] = idx
+            
+            # FIX: Guaranteed to exist, no more byte() fallback errors
+            p0 = self.vocab[pair[0]]
+            p1 = self.vocab[pair[1]]
+            self.vocab[idx] = p0 + p1
+            self.inverse_vocab[p0 + p1] = idx
+
+    def encode(self, text: str) -> List[int]:
+        if not text: return []
+        pattern = f"({'|'.join(re.escape(k) for k in self.special_tokens.keys())})"
+        parts = re.split(pattern, text)
+        token_ids = []
+        offset = len(self.special_tokens)
+        for part in parts:
+            if not part: continue
+            if part in self.special_tokens: token_ids.append(self.special_tokens[part])
+            else:
+                ids = [b + offset for b in part.encode('utf-8')]
+                for pair, merge_id in self.merges.items():
+                    new_ids = []
+                    i = 0
+                    while i < len(ids):
+                        if i < len(ids) - 1 and ids[i] == pair[0] and ids[i + 1] == pair[1]:
+                            new_ids.append(merge_id); i += 2
+                        else:
+                            new_ids.append(ids[i]); i += 1
+                    ids = new_ids
+                token_ids.extend(ids)
+        return token_ids
+
+    def decode(self, ids: List[int]) -> str:
+        byte_chunks = []
+        for i in ids:
+            if i in self.inverse_special_tokens: byte_chunks.append(self.inverse_special_tokens[i].encode('utf-8'))
+            elif i in self.vocab: byte_chunks.append(self.vocab[i])
+            else:
+                offset = len(self.special_tokens)
+                if 0 <= i - offset < 256: byte_chunks.append(bytes([i - offset]))
+                else: byte_chunks.append(b'?')
+        return b''.join(byte_chunks).decode('utf-8', errors='replace')
+
+    def save(self, filepath: str):
+        import json
+        data = {
+            'vocab_size': self.vocab_size,
+            'merges': {f"{k[0]},{k[1]}": v for k, v in self.merges.items()},
+            'special_tokens': self.special_tokens
+        }
+        with open(filepath, 'w') as f: json.dump(data, f)
+
+    def load(self, filepath: str):
+        import json
+        with open(filepath, 'r') as f: data = json.load(f)
+        self.special_tokens = data['special_tokens']
+        self.inverse_special_tokens = {v: k for k, v in self.special_tokens.items()}
+        self.merges = {tuple(map(int, k.split(','))): v for k, v in data['merges'].items()}
+        self._init_vocab()
+        # Reconstruct vocab from merges
+        for pair, idx in self.merges.items():
+            p0 = self.vocab[pair[0]]
+            p1 = self.vocab[pair[1]]
+            self.vocab[idx] = p0 + p1
+            self.inverse_vocab[p0 + p1] = idx

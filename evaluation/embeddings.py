@@ -26,7 +26,7 @@ class EmbeddingEngine:
         freqs_cis = self.model.freqs_cis[:seq_len].to(token_ids.device)
         
         for block in self.model.blocks:
-            x, _ = block(x, freqs_cis, use_cache=False)
+            x, _, _ = block(x, freqs_cis, use_cache=False)
             
         x = self.model.norm(x)
         # Mean pooling across the sequence dimension

@@ -1,42 +1,42 @@
-# fine_tuning/inject.py
-"""Utility to inject LoRA layers into an existing GPT model architecture."""
-
+import torch
 import torch.nn as nn
-from model.transformer import GPT
-from fine_tuning.lora import LoRALinear
-from utils.logger import get_logger
+import math
 
-logger = get_logger(__name__)
+class LoRALayer(nn.Module):
+    def __init__(self, original_layer: nn.Linear, rank: int = 4, alpha: int = 16):
+        super().__init__()
+        self.original = original_layer
+        self.original.weight.requires_grad = False
+        if getattr(self.original, 'bias', None) is not None:
+            self.original.bias.requires_grad = False
+            
+        self.lora_A = nn.Parameter(torch.zeros(rank, original_layer.in_features))
+        self.lora_B = nn.Parameter(torch.zeros(original_layer.out_features, rank))
+        self.scaling = alpha / rank
+        nn.init.kaiming_uniform_(self.lora_A, a=math.sqrt(5))
+        nn.init.zeros_(self.lora_B)
 
-def inject_lora_to_model(model: GPT, rank: int = 4, alpha: float = 16, target_modules: list = ["qkv_proj", "out_proj"]):
-    """
-    Recursively replaces target linear layers in the GPT model with LoRALinear wrappers
-    and freezes all other base model parameters.
-    
-    Args:
-        model (GPT): The pretrained base GPT model.
-        rank (int): LoRA rank dimension.
-        alpha (float): LoRA scaling factor.
-        target_modules (list): Names of linear layers to adapt.
-    """
-    # 1. Freeze ALL parameters in the base model first
+    @property
+    def weight(self): return self.original.weight
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        base_out = self.original(x)
+        lora_out = (x @ self.lora_A.transpose(0, 1)) @ self.lora_B.transpose(0, 1)
+        return base_out + lora_out * self.scaling
+
+LoRALinear = LoRALayer
+
+def inject_lora_to_model(model, rank: int = 4, alpha: int = 16, target_modules=['w_q', 'w_v']):
+    # Completely freeze all base model parameters FIRST
     for param in model.parameters():
         param.requires_grad = False
-
-    injected_count = 0
-    
-    # 2. Recursively iterate through all named modules in the model
+        
     for name, module in model.named_modules():
-        # Check if the module is a Linear layer and matches our target names
-        if isinstance(module, nn.Linear) and any(target in name for target in target_modules):
-            # Find the parent module so we can replace the attribute
-            parent_name, _, child_name = name.rpartition('.')
-            parent = model.get_submodule(parent_name) if parent_name else model
-            
-            # Wrap the original linear layer with LoRA
-            lora_wrapped = LoRALinear(module, rank=rank, alpha=alpha)
-            setattr(parent, child_name, lora_wrapped)
-            injected_count += 1
-            
-    logger.info("LoRA injected successfully", injected_layers=injected_count, rank=rank)
+        if isinstance(module, nn.Linear):
+            for target in target_modules:
+                if target in name:
+                    parent_name = '.'.join(name.split('.')[:-1])
+                    child_name = name.split('.')[-1]
+                    parent = model.get_submodule(parent_name) if parent_name else model
+                    setattr(parent, child_name, LoRALayer(module, rank, alpha))
     return model
