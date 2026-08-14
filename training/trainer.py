@@ -56,9 +56,9 @@ class LLMTrainer:
         # We only strictly enforce AMP on CUDA where it is definitively stable.
         if device_type == "cuda":
             with torch.autocast(device_type="cuda", dtype=torch.float16):
-                logits, loss = self.model(x, y)
+                logits, loss, _ = self.model(x, y)
         else:
-            logits, loss = self.model(x, y)
+            logits, loss, _ = self.model(x, y)
 
         # 4. Backward Pass (Calculate Gradients)
         if device_type == "cuda":

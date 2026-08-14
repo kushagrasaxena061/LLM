@@ -1,57 +1,50 @@
 # prompt_engineering/optimizer.py
-"""Prompt Optimization Engine to reduce token usage and latency."""
+"""Engine for compressing prompts to reduce token usage and latency."""
 
 import re
 from typing import Dict
 from tokenizer.base import BaseTokenizer
+from utils.logger import get_logger
+
+logger = get_logger(__name__)
 
 class PromptOptimizer:
     def __init__(self, tokenizer: BaseTokenizer):
         self.tokenizer = tokenizer
-        # A basic heuristic list of words that rarely add semantic value to LLM instructions
+        # Common filler words that consume tokens but provide zero semantic value to an LLM
         self.stop_words = {
-            "please", "can", "you", "could", "would", "kindly", "just", 
-            "help", "me", "with", "a", "an", "the", "to", "of", "and", "in"
+            "please", "could", "you", "kindly", "help", "me", 
+            "a", "an", "the", "to", "is", "are", "am", "i", 
+            "can", "will", "would", "tell", "know", "what"
         }
 
-    def analyze_prompt(self, raw_prompt: str) -> Dict:
-        """Analyzes a prompt to find optimization opportunities."""
-        original_tokens = self.tokenizer.encode(raw_prompt)
+    def optimize_prompt(self, prompt: str) -> Dict[str, any]:
+        """Strips filler words and returns token savings metrics."""
+        original_tokens = len(self.tokenizer.encode(prompt))
         
-        return {
-            "original_prompt": raw_prompt,
-            "original_token_count": len(original_tokens),
-            "word_count": len(raw_prompt.split())
-        }
-
-    def optimize_prompt(self, raw_prompt: str) -> Dict:
-        """
-        Strips unnecessary words and formatting to compress the prompt 
-        while retaining semantic intent.
-        """
-        analysis = self.analyze_prompt(raw_prompt)
+        # Strip punctuation and lowercase for aggressive optimization
+        clean_text = re.sub(r'[^\w\s]', '', prompt.lower())
         
-        # 1. Lowercase and strip punctuation for heuristic matching
-        clean_words = re.sub(r'[^\w\s]', '', raw_prompt).lower().split()
-        
-        # 2. Rebuild prompt keeping only semantically heavy words (very naive heuristic for demo)
-        optimized_words = [word for word in raw_prompt.split() if word.lower().strip(',.!?') not in self.stop_words]
+        # Filter out the stop words
+        words = clean_text.split()
+        optimized_words = [w for w in words if w not in self.stop_words]
         optimized_prompt = " ".join(optimized_words)
         
-        if not optimized_prompt:  # Fallback if we stripped everything
-            optimized_prompt = raw_prompt
+        # Fallback: if the user typed nothing but stop words, keep original
+        if not optimized_prompt:
+            optimized_prompt = prompt
             
-        optimized_tokens = self.tokenizer.encode(optimized_prompt)
+        optimized_tokens = len(self.tokenizer.encode(optimized_prompt))
+        saved = original_tokens - optimized_tokens
         
-        # Calculate savings
-        tokens_saved = analysis["original_token_count"] - len(optimized_tokens)
-        savings_percentage = (tokens_saved / analysis["original_token_count"]) * 100 if analysis["original_token_count"] > 0 else 0
+        logger.info("Prompt optimized", original=original_tokens, optimized=optimized_tokens)
         
         return {
-            "original_prompt": raw_prompt,
+            "original_prompt": prompt,
+            "original_tokens": original_tokens,
             "optimized_prompt": optimized_prompt,
-            "original_tokens": analysis["original_token_count"],
-            "optimized_tokens": len(optimized_tokens),
-            "tokens_saved": tokens_saved,
-            "savings_percentage": savings_percentage
+            "optimized_tokens": optimized_tokens,
+            "tokens_saved": saved,
+            "savings_percentage": (saved / original_tokens * 100) if original_tokens > 0 else 0.0,
+            "optimization_reason": "Stop-word and filler removal"
         }

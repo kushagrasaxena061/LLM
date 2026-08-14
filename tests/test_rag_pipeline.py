@@ -14,7 +14,7 @@ def test_rag_pipeline_execution():
     dim = 16
     config = GPTConfig(
         vocab_size=260,
-        context_length=64,
+        context_length=256,
         d_model=dim,
         n_layers=2,
         n_heads=2

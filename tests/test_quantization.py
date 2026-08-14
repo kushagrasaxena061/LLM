@@ -31,7 +31,7 @@ def test_quantization_pipeline():
     # 4. Verify forward pass works post-quantization (pass targets to evaluate full sequence logits)
     idx = torch.randint(0, config.vocab_size, (1, 10), device=env_config.device)
     with torch.no_grad():
-        logits, _ = quantized_model(idx, targets=idx)
+        logits, _, _ = quantized_model(idx, targets=idx)
         
     assert logits.shape == (1, 10, config.vocab_size), f"Quantized logit shape invalid: {logits.shape}"
     assert int8_size < fp32_size, "Quantization did not reduce model size!"

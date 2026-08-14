@@ -25,7 +25,7 @@ def test_gpt_forward_pass():
     targets = torch.randint(0, config.vocab_size, (2, 16))
 
     # 3. Forward pass with targets (Training Mode)
-    logits, loss = model(idx, targets)
+    logits, loss, _ = model(idx, targets)
 
     # Assert Logit shape: (Batch, SeqLen, vocab_size)
     assert logits.shape == (2, 16, config.vocab_size), f"Unexpected logit shape: {logits.shape}"
@@ -35,7 +35,7 @@ def test_gpt_forward_pass():
     print(f"\n✅ Training forward pass successful! Loss: {loss.item():.4f}")
 
     # 4. Forward pass without targets (Inference Mode)
-    inference_logits, inference_loss = model(idx)
+    inference_logits, inference_loss, _ = model(idx)
 
     # In inference mode, logits should only be calculated for the last token position (Shape: 2, 1, vocab_size)
     assert inference_logits.shape == (2, 1, config.vocab_size), f"Unexpected inference logit shape: {inference_logits.shape}"

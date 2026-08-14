@@ -7,7 +7,7 @@ from utils.logger import get_logger
 
 logger = get_logger(__name__)
 
-class SecurityGuard:
+class SecurityGuardrail:
     def __init__(self):
         # Heuristic detection patterns for common prompt injections and jailbreaks
         self.injection_patterns = [
@@ -54,3 +54,6 @@ class SecurityGuard:
             "matched_pattern": pattern,
             "sanitized_prompt": clean_prompt
         }
+
+# Alias both class names so imports for either SecurityGuard or SecurityGuardrail succeed
+SecurityGuard = SecurityGuardrail

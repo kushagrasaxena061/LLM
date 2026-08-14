@@ -85,7 +85,7 @@ def run_sft_training(model: GPT, tokenizer: BaseTokenizer, dataset_samples: List
             optimizer.zero_grad(set_to_none=True)
             
             # Forward pass: model cross_entropy handles -100 masking automatically
-            logits, loss = model(x, targets=y)
+            logits, loss, _ = model(x, targets=y)
             
             loss.backward()
             optimizer.step()

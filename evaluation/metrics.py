@@ -36,7 +36,7 @@ class ModelEvaluator:
         
         for x, y in dataloader:
             x, y = x.to(self.device), y.to(self.device)
-            _, loss = self.model(x, targets=y)
+            _, loss, _ = self.model(x, targets=y)
             if loss is not None:
                 total_loss += loss.item()
                 total_batches += 1
