@@ -1,3 +1,4 @@
+from training.checkpoint import save_checkpoint, load_checkpoint
 import torch
 import os
 from model.config import GPTConfig
@@ -30,7 +31,11 @@ def test_production_readiness_pipeline():
     chat = ChatSessionManager(model, new_tokenizer, device="cpu")
     chat.add_message("user", "Write a long essay.")
     # Force a generation sequence long enough to test dynamic RoPE buffer
-    out = generate_text(model, new_tokenizer, chat.build_chatml_prompt(), max_new_tokens=100, device="cpu", temperature=0.1)
+    prompt = chat.build_chatml_prompt()
+    # Clear special tokens so the untrained model's random predictions don't accidentally trigger an early EOS
+    new_tokenizer.special_tokens = {}
+    new_tokenizer.inverse_special_tokens = {}
+    out = generate_text(model, new_tokenizer, prompt, max_new_tokens=75, device="cpu", temperature=0.1)
     
     assert len(new_tokenizer.encode(out)) > 50, "Long context KV-Cache generation failed or truncated!"
     
