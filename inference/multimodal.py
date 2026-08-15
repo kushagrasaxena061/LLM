@@ -1,50 +1,46 @@
-"""
-Educational Multimodal Generation Pipeline.
-
-NOTE: This proves the computational graph correctly fuses 
-Vision features -> LLM Embeddings -> Transformer Generation.
-Visual understanding is dummy/random unless a pre-trained VLM adapter is loaded.
-"""
 import torch
 
-def generate_multimodal_text(model, tokenizer, vision_extractor, vision_adapter, image_tensor, prompt, max_new_tokens=20, device="cpu"):
+@torch.no_grad()
+def generate_multimodal_text(
+    model, tokenizer, vision_extractor, vision_adapter, image_tensor, prompt, max_new_tokens=20, device="cpu"
+):
     model.eval()
-    was_training = model.training
     
-    with torch.no_grad():
-        # 1. Vision Pathway (Patch Extractor -> Feature Adapter)
-        patches = vision_extractor(image_tensor.to(device))
-        vision_embeds = vision_adapter(patches)
-        if vision_embeds.dim() == 2:
-            vision_embeds = vision_embeds.unsqueeze(0)
+    # 1. Vision Features -> Project to LLM Dimension
+    vision_features = vision_extractor(image_tensor.to(device))
+    vision_embeds = vision_adapter(vision_features)
+    
+    # 2. Text Features -> Embed directly into LLM Dimension
+    text_ids = torch.tensor([tokenizer.encode(prompt)], dtype=torch.long, device=device)
+    text_embeds = model.tok_embeddings(text_ids)
+    
+    # 3. Multimodal Fusion Sequence
+    inputs_embeds = torch.cat([vision_embeds, text_embeds], dim=1)
+    
+    generated_ids = []
+    past_key_values = None
+    curr_embeds = inputs_embeds
+    curr_idx = None
+    
+    # 4. Autoregressive Loop (Handling the transition from embeds -> token IDs)
+    for step in range(max_new_tokens):
+        if step == 0:
+            logits, _, past_key_values = model(idx=None, inputs_embeds=curr_embeds, use_cache=True)
+        else:
+            logits, _, past_key_values = model(idx=curr_idx, inputs_embeds=None, past_key_values=past_key_values, use_cache=True)
             
-        # 2. Text Pathway
-        text_ids = torch.tensor([tokenizer.encode(prompt)], dtype=torch.long, device=device)
-        text_embeds = model.tok_embeddings(text_ids)
+        next_token = torch.argmax(logits[:, -1, :], dim=-1, keepdim=True)
+        generated_ids.append(next_token.item())
+        curr_idx = next_token
         
-        # 3. Multimodal Fusion
-        inputs_embeds = torch.cat([vision_embeds, text_embeds], dim=1)
-        
-        # 4. Auto-regressive Generation Loop
-        generated_ids = []
-        for _ in range(max_new_tokens):
-            # Pass continuous fused embeddings through standard transformer forward
-            logits, _, _ = model(idx=None, inputs_embeds=inputs_embeds)
-            next_token_logits = logits[:, -1, :]
-            next_token = torch.argmax(next_token_logits, dim=-1)
-            
-            generated_ids.append(next_token.item())
-            
-            # Stop generation if EOS or Special token hit
-            if next_token.item() in tokenizer.inverse_special:
-                if next_token.item() in [0, 2]: # <|endoftext|> or <|im_end|>
-                    break
-                    
-            # Auto-regressive append
-            next_embed = model.tok_embeddings(next_token.unsqueeze(0))
-            inputs_embeds = torch.cat([inputs_embeds, next_embed], dim=1)
-            
-    if was_training:
-        model.train()
-        
+        if hasattr(tokenizer, "special_tokens") and "<|im_end|>" in tokenizer.special_tokens:
+            if next_token.item() == tokenizer.special_tokens["<|im_end|>"]:
+                break
+                
     return tokenizer.decode(generated_ids)
+
+def process_multimodal_input(model, tokenizer, adapter, image_tensor, prompt, device="cpu"):
+    vision_embeds = adapter(image_tensor.to(device))
+    text_ids = torch.tensor([tokenizer.encode(prompt)], dtype=torch.long, device=device)
+    text_embeds = model.tok_embeddings(text_ids)
+    return torch.cat([vision_embeds, text_embeds], dim=1)

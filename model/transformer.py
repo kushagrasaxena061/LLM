@@ -54,57 +54,69 @@ class GPT(nn.Module):
 
     def forward(
         self,
-        idx: torch.Tensor=None,
-        targets: Optional[torch.Tensor] = None,
-        past_key_values: Optional[List[Tuple[torch.Tensor, torch.Tensor]]] = None,
+        idx: torch.Tensor = None,
+        targets: torch.Tensor = None,
+        past_key_values: list = None,
         use_cache: bool = False,
-        start_pos: Optional[int] = None,
-        return_attention: bool = False
-    , inputs_embeds=None):
-        if inputs_embeds is not None:
-            B, T = inputs_embeds.shape[:2]
-        else:
-            B, T = idx.shape
-        device = (inputs_embeds.device if inputs_embeds is not None else idx.device)
-        if start_pos is None:
-            start_pos = past_key_values[0][0].shape[2] if past_key_values is not None else 0
-            
-        required_len = start_pos + T
-        self._ensure_freqs_cis(required_len, device)
-        freqs_cis_slice = self.freqs_cis[start_pos:required_len]
-        
+        inputs_embeds: torch.Tensor = None,
+        return_attention: bool = False,
+        **kwargs
+    ):
+        # 1. Route between Text Tokens (idx) or Multimodal Embeddings (inputs_embeds)
         if inputs_embeds is not None:
             x = inputs_embeds
-        else:
+            b, t, _ = x.shape
+        elif idx is not None:
+            b, t = idx.size()
             x = self.tok_embeddings(idx)
-        x = self.dropout(x)
-        
-        presents = [] if use_cache else None
-        attentions = [] if return_attention else None
-        
-        for i, block in enumerate(self.blocks):
-            layer_past = past_key_values[i] if past_key_values is not None else None
-            x, present, attn_w = block(
-                x,
-                freqs_cis=freqs_cis_slice,
-                layer_past=layer_past,
-                use_cache=use_cache,
-                return_attention=return_attention
-            )
-            if use_cache:
-                presents.append(present)
-            if return_attention:
-                attentions.append(attn_w)
-                
-        x = self.norm(x)
-        logits = self.lm_head(x)
-        
-        loss = None
-        if targets is not None:
-            loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1), ignore_index=-100)
         else:
-            logits = logits[:, -1:, :]
+            raise ValueError("Must provide either idx or inputs_embeds")
+
+        x = self.dropout(x)
+
+        # 2. Dynamic RoPE Positional Offset
+        seq_offset = 0
+        if past_key_values is not None:
+            seq_offset = past_key_values[0][0].shape[2]
+
+        if hasattr(self, 'freqs_cis'):
+            freqs_cis = self.freqs_cis[seq_offset : seq_offset + t].to(x.device)
+        else:
+            freqs_cis = None
+
+        presents = [] if use_cache else None
+        all_attentions = [] if return_attention else None
+
+        # 3. Indestructible Block Routing
+        for i, block in enumerate(self.blocks):
+            past = past_key_values[i] if past_key_values is not None else None
             
-        if return_attention:
-            return logits, loss, presents, attentions
-        return logits, loss, presents
+            block_ret = block(x, freqs_cis, layer_past=past, use_cache=use_cache, return_attention=return_attention)
+            if return_attention:
+                x, present_i, attn_w = block_ret
+                if use_cache and present_i is not None:
+                    presents.append(present_i)
+                all_attentions.append(attn_w)
+            elif isinstance(block_ret, tuple):
+                x = block_ret[0]
+                if use_cache:
+                    presents.append(block_ret[1])
+            else:
+                x = block_ret
+
+        # Dynamically map to the correct normalization layer (norm or ln_f)
+        x = getattr(self, "norm", getattr(self, "ln_f", lambda x: x))(x)
+
+        # 4. Loss & Logit Calculation
+        if targets is not None:
+            logits = self.lm_head(x)
+            import torch.nn.functional as F
+            loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1), ignore_index=-1)
+            if return_attention:
+                return logits, loss, presents, all_attentions
+            return logits, loss, presents
+        else:
+            logits = self.lm_head(x[:, [-1], :] if not return_attention and x.size(1) > 1 else x)
+            if return_attention:
+                return logits, None, presents, all_attentions
+            return logits, None, presents

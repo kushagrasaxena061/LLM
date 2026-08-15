@@ -1,3 +1,7 @@
+import copy
+import torch
+if hasattr(torch.backends, 'quantized') and torch.backends.mps.is_available():
+    torch.backends.quantized.engine = 'qnnpack'
 # frontend/app.py
 """Unified 24-Module Streamlit Studio for MiniGPT-151M Platform."""
 
@@ -15,7 +19,10 @@ if str(root_dir) not in sys.path:
     sys.path.append(str(root_dir))
 
 from configs.base_config import env_config
-from model.config import GPTConfig
+from model.config import GPTConfig, canonical_151m_config
+from rag.hybrid_search import Document
+from rag.hybrid_search import HybridRetriever
+from rag.reranker import HeuristicLexicalReranker
 from model.transformer import GPT
 from tokenizer.bpe import BPETokenizer
 from inference.generate import generate_text
@@ -23,7 +30,7 @@ from inference.chat import ChatSessionManager
 from rag.vector_store import SimpleVectorStore
 from rag.pipeline import RAGPipeline
 from prompt_engineering.optimizer import PromptOptimizer
-from multimodal.vision_adapter import VisionLanguageAdapter, preprocess_image
+from multimodal.vision_adapter import VisionLanguageAdapter, VisionPatchExtractor, preprocess_image
 from personas.engine import PersonaManager
 from evaluation.safety import SafetyEvaluator
 from evaluation.embeddings import EmbeddingEngine
@@ -35,39 +42,44 @@ API_BASE_URL = "http://localhost:8000"
 
 @st.cache_resource
 def load_components():
-    config = GPTConfig(
-        vocab_size=50257, 
-        context_length=2048, 
-        d_model=768, 
-        n_layers=12, 
-        n_heads=12, 
-        weight_tying=True
-    )
+    config = canonical_151m_config
     model = GPT(config).to(env_config.device)
     model.eval()
 
-    # Ensure the tokenizer matches the real vocab size
-    tokenizer = BPETokenizer(vocab_size=50257)
-    full_vocab = "The quick brown fox jumps over the lazy dog. FastAPI is a modern web framework. " + string.ascii_letters + string.punctuation + string.digits
+    tokenizer = BPETokenizer(vocab_size=config.vocab_size)
+    full_vocab = "The quick brown fox jumps over the lazy dog. FastAPI is a modern web framework. "
     tokenizer.train(full_vocab)
 
-    vector_store = SimpleVectorStore(embedding_dim=32)
-    docs = ["FastAPI handles our secure backend by acting as the API layer.", "Streamlit handles the frontend interface."]
-    torch.manual_seed(42)
-    embeddings = torch.randn(2, 32, device=env_config.device)
-    vector_store.add_texts(docs, embeddings)
-    rag_pipeline = RAGPipeline(vector_store, model, tokenizer, env_config.device)
-
-    optimizer = PromptOptimizer(tokenizer)
-    vision_adapter = VisionLanguageAdapter(vision_dim=512, llm_dim=32).to(env_config.device)
+    embedding_engine = EmbeddingEngine(model, tokenizer)
     persona_manager = PersonaManager()
     safety_evaluator = SafetyEvaluator()
-    embedding_engine = EmbeddingEngine(model)
     chat_manager = ChatSessionManager(model, tokenizer, device=env_config.device)
+    optimizer = PromptOptimizer(tokenizer)
+    vision_adapter = VisionLanguageAdapter(vision_dim=512, llm_dim=config.d_model).to(env_config.device)
+
+    # REAL RAG (No random tensors)
+    vector_store = SimpleVectorStore(embedding_dim=config.d_model)
+    docs = [
+        Document(id="1", text="FastAPI handles our secure backend by acting as the API layer.", metadata={"source": "system"}),
+        Document(id="2", text="Streamlit handles the frontend interface.", metadata={"source": "system"})
+    ]
+    
+    embeds = []
+    for d in docs:
+        ids = torch.tensor([tokenizer.encode(d.text)], dtype=torch.long, device=env_config.device)
+        vec = embedding_engine.extract_sequence_embedding(ids)[0].detach()
+        embeds.append(vec)
+        
+    vector_store.add_documents(docs, torch.stack(embeds))
+    
+    hybrid = HybridRetriever(vector_store, embedding_engine)
+    hybrid.fit_bm25(docs)
+    reranker = HeuristicLexicalReranker()
+    rag_pipeline = RAGPipeline(hybrid, reranker, model, tokenizer, embedding_engine, env_config.device)
 
     return model, tokenizer, rag_pipeline, optimizer, vision_adapter, persona_manager, safety_evaluator, embedding_engine, chat_manager
 
-(model, tokenizer, rag_pipeline, optimizer, vision_adapter, persona_manager, safety_evaluator, embedding_engine, chat_manager) = load_components()
+model, tokenizer, rag_pipeline, optimizer, vision_adapter, persona_manager, safety_evaluator, embedding_engine, chat_manager = load_components() 
 
 st.sidebar.title("🧠 MiniGPT Studio")
 st.sidebar.markdown(f"**Target:** 151M Decoder GPT\n**Device:** `{env_config.device.upper()}`")
@@ -91,7 +103,7 @@ if module == "🏠 Dashboard":
     st.markdown("Complete, verified engineering platform for custom GPT-style transformers.")
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("Architecture", "GPT Decoder")
-    c2.metric("Target Params", "151.86M")
+    c2.metric("Actual Params", f"{sum(p.numel() for p in model.parameters()) / 1e6:.2f}M")
     c3.metric("Attention", "RoPE + Causal")
     c4.metric("Norm / FFN", "RMSNorm / SwiGLU")
 
@@ -268,7 +280,7 @@ elif module == "👁️ Attention Lab":
         attn_matrix = attentions[layer_sel][0, head_sel].cpu().numpy()
         token_labels = [tokenizer.decode([t]) for t in tokens]
         st.markdown(f"**Sequence Length ($N$):** `{len(tokens)} tokens`")
-        st.dataframe(pd.DataFrame(attn_matrix, index=token_labels, columns=token_labels).style.background_gradient(cmap="Blues"))
+        st.dataframe(pd.DataFrame(attn_matrix, index=[f'{i}_{t}' for i, t in enumerate(token_labels)], columns=[f'{i}_{t}' for i, t in enumerate(token_labels)]).style.background_gradient(cmap="Blues"))
         st.caption("Extracted directly from model causal multi-head self-attention.")
 
 elif module == "📐 Embedding Lab":
@@ -312,7 +324,7 @@ elif module == "🎯 Fine-Tuning / LoRA Lab":
 
 elif module == "📦 Quantization Lab":
     st.header("📦 Dynamic INT8 Post-Training Quantization")
-    fp32_size, int8_size = get_model_size_mb(model), get_model_size_mb(quantize_model_to_int8(model))
+    fp32_size, int8_size = get_model_size_mb(model), get_model_size_mb(quantize_model_to_int8(GPT(canonical_151m_config).to('cpu')))
     c1, c2, c3 = st.columns(3)
     c1.metric("FP32 Baseline", f"{fp32_size:.2f} MB"); c2.metric("INT8 Quantized", f"{int8_size:.2f} MB"); c3.metric("Compression Ratio", f"{fp32_size / int8_size:.2f}x")
 
@@ -320,7 +332,7 @@ elif module == "🔎 RAG Lab":
     st.header("🔎 Retrieval-Augmented Generation (Hybrid Search)")
     q = st.text_input("Ask a question:", "what handles our secure backend")
     if st.button("Execute Hybrid Retrieval"):
-        st.info(rag_pipeline.answer_query(q, torch.randn(32, device=env_config.device), top_k=1, max_new_tokens=20))
+        st.info(rag_pipeline.answer_query(q, top_k=1, max_new_tokens=20))
 
 elif module == "📊 RAG Evaluation":
     st.header("📊 Information Retrieval (IR) RAG Benchmark")
@@ -348,7 +360,7 @@ elif module == "👁️ Multimodal Lab":
         img = Image.open(uploaded)
         st.image(img, width=200)
         if st.button("Process Real Image Patches"):
-            st.success(f"Image converted to patch embeddings and projected into LLM space: `{list(vision_adapter(preprocess_image(img).to(env_config.device)).shape)}`")
+            st.success(f"Image converted to patch embeddings and projected into LLM space: `{list(vision_adapter(VisionPatchExtractor().to(env_config.device)(preprocess_image(img).to(env_config.device).to(env_config.device))).shape)}`")
 
 elif module == "🛡️ Security Lab":
     st.header("🛡️ OWASP Adversarial Security Lab")
