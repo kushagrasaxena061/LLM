@@ -11,7 +11,7 @@ if root_dir not in sys.path:
 import torch
 from rag.vector_store import SimpleVectorStore
 from rag.hybrid_search import HybridRetriever
-from rag.reranker import CrossEncoderReranker
+from rag.reranker import HeuristicLexicalReranker
 from evaluation.rag_eval import RAGEvaluator
 
 def run_rag_benchmark_suite():
@@ -33,7 +33,7 @@ def run_rag_benchmark_suite():
 
     hybrid = HybridRetriever(store)
     hybrid.fit_bm25(corpus)
-    reranker = CrossEncoderReranker()
+    reranker = HeuristicLexicalReranker()
     evaluator = RAGEvaluator()
 
     # 2. Define Test Queries and Ground Truth

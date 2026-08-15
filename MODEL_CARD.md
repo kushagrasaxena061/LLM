@@ -12,7 +12,7 @@
 ## Infrastructure Capabilities
 - Custom BPE Tokenizer (Lossless UTF-8)
 - $O(N)$ KV-Cache Autoregressive Generation
-- Hybrid RAG (Dense + BM25 + Reciprocal Rank Fusion + CrossEncoder Reranking)
+- Hybrid RAG (Dense + BM25 + Reciprocal Rank Fusion + heuristic reranking)
 - LoRA Parameter-Efficient Fine-Tuning
 - INT8 Post-Training Quantization
 - Multimodal Vision-Language Projection Adapter

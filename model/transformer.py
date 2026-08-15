@@ -54,15 +54,18 @@ class GPT(nn.Module):
 
     def forward(
         self,
-        idx: torch.Tensor,
+        idx: torch.Tensor=None,
         targets: Optional[torch.Tensor] = None,
         past_key_values: Optional[List[Tuple[torch.Tensor, torch.Tensor]]] = None,
         use_cache: bool = False,
         start_pos: Optional[int] = None,
         return_attention: bool = False
-    ):
-        B, T = idx.shape
-        device = idx.device
+    , inputs_embeds=None):
+        if inputs_embeds is not None:
+            B, T = inputs_embeds.shape[:2]
+        else:
+            B, T = idx.shape
+        device = (inputs_embeds.device if inputs_embeds is not None else idx.device)
         if start_pos is None:
             start_pos = past_key_values[0][0].shape[2] if past_key_values is not None else 0
             
@@ -70,7 +73,10 @@ class GPT(nn.Module):
         self._ensure_freqs_cis(required_len, device)
         freqs_cis_slice = self.freqs_cis[start_pos:required_len]
         
-        x = self.tok_embeddings(idx)
+        if inputs_embeds is not None:
+            x = inputs_embeds
+        else:
+            x = self.tok_embeddings(idx)
         x = self.dropout(x)
         
         presents = [] if use_cache else None

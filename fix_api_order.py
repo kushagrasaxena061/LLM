@@ -1,3 +1,4 @@
+from evaluation.embeddings import EmbeddingEngine
 import os
 
 api_path = 'api/server.py'

@@ -9,7 +9,7 @@ from evaluation.embeddings import EmbeddingEngine
 def test_embedding_and_pca_math():
     config = GPTConfig(vocab_size=100, context_length=32, d_model=32, n_layers=2, n_heads=2)
     model = GPT(config)
-    engine = EmbeddingEngine(model)
+    engine = EmbeddingEngine(model, None)
     
     token_ids = torch.randint(0, 100, (4, 8))
     seq_emb = engine.extract_sequence_embedding(token_ids)

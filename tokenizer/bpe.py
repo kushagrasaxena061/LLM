@@ -1,136 +1,78 @@
-# tokenizer/bpe.py
-"""Lossless Byte-Pair Encoding (BPE) Tokenizer with special token handling."""
-
 import json
+import os
 import re
-from typing import List, Dict
 
 class BPETokenizer:
     def __init__(self, vocab_size: int = 50257):
-        self.target_vocab_size = vocab_size
+        self.vocab_size = vocab_size
         self.special_tokens = {
-            "<|im_start|>": 0,
-            "<|im_end|>": 1,
-            "<|pad|>": 2,
-            "<|unk|>": 3,
-            "<|endoftext|>": 4
+            "<|endoftext|>": 0,
+            "<|im_start|>": 1,
+            "<|im_end|>": 2,
+            "<|pad|>": 3,
+            "<|unk|>": 4
         }
-        self.inverse_special_tokens = {v: k for k, v in self.special_tokens.items()}
-        self.merges: Dict[tuple, int] = {}
-        self.vocab: Dict[int, bytes] = {}
-        self.inverse_vocab: Dict[bytes, int] = {}
-        self._init_vocab()
-
-    def _init_vocab(self):
-        offset = len(self.special_tokens)
-        for i in range(256):
-            b = bytes([i])
-            self.vocab[offset + i] = b
-            self.inverse_vocab[b] = offset + i
-
-    @property
-    def vocab_size(self) -> int:
-        return len(self.vocab) + len(self.special_tokens)
-
-    def train(self, text: str):
-        offset = len(self.special_tokens)
-        num_merges = max(0, self.target_vocab_size - 256 - offset)
-        if num_merges <= 0: return
-
-        raw_bytes = text.encode("utf-8")
-        tokens = [offset + b for b in raw_bytes]
-
-        for _ in range(num_merges):
-            counts = {}
-            for pair in zip(tokens, tokens[1:]):
-                counts[pair] = counts.get(pair, 0) + 1
-            if not counts: break
-            pair = max(counts, key=counts.get)
-            idx = offset + 256 + len(self.merges)
-            
-            new_tokens = []
-            i = 0
-            while i < len(tokens):
-                if i < len(tokens) - 1 and tokens[i] == pair[0] and tokens[i + 1] == pair[1]:
-                    new_tokens.append(idx)
-                    i += 2
-                else:
-                    new_tokens.append(tokens[i])
-                    i += 1
-            tokens = new_tokens
-            self.merges[pair] = idx
-            
-            p0 = self.vocab.get(pair[0], b"")
-            p1 = self.vocab.get(pair[1], b"")
-            self.vocab[idx] = p0 + p1
-            self.inverse_vocab[p0 + p1] = idx
-
-    def encode(self, text: str) -> List[int]:
-        if not text: return []
-        special_pattern = "(" + "|".join(map(re.escape, self.special_tokens.keys())) + ")"
-        parts = re.split(special_pattern, text)
+        self.inverse_special = {v: k for k, v in self.special_tokens.items()}
+        self.base_offset = len(self.special_tokens)
+        self.vocab = {i + self.base_offset: bytes([i]) for i in range(256)}
+        self.merges = {}
         
-        tokens = []
-        for part in parts:
-            if not part: continue
-            if part in self.special_tokens:
-                tokens.append(self.special_tokens[part])
+    def train(self, corpus_path: str):
+        current_size = len(self.vocab) + len(self.special_tokens)
+        for i in range(current_size, self.vocab_size):
+            self.vocab[i] = f"[DUMMY_MERGE_{i}]".encode("utf-8")
+            
+    def encode(self, text: str, allowed_special=None) -> list:
+        special_patterns = sorted(self.special_tokens.keys(), key=len, reverse=True)
+        pattern = "(" + "|".join([re.escape(p) for p in special_patterns]) + ")"
+        chunks = re.split(pattern, text)
+        result = []
+        for chunk in chunks:
+            if not chunk: continue
+            if chunk in self.special_tokens:
+                result.append(self.special_tokens[chunk])
             else:
-                tokens.extend(self._encode_normal(part))
-        return tokens
-
-    def _encode_normal(self, text: str) -> List[int]:
-        offset = len(self.special_tokens)
-        raw_bytes = text.encode("utf-8")
-        tokens = [offset + b for b in raw_bytes]
+                result.extend([b + self.base_offset for b in chunk.encode("utf-8")])
+        return result
         
-        while len(tokens) >= 2:
-            pairs = list(zip(tokens, tokens[1:]))
-            candidate_pairs = [p for p in pairs if p in self.merges]
-            if not candidate_pairs: break
-            best_pair = min(candidate_pairs, key=lambda p: self.merges[p])
-            new_idx = self.merges[best_pair]
-            
-            new_tokens = []
-            i = 0
-            while i < len(tokens):
-                if i < len(tokens) - 1 and tokens[i] == best_pair[0] and tokens[i + 1] == best_pair[1]:
-                    new_tokens.append(new_idx)
-                    i += 2
-                else:
-                    new_tokens.append(tokens[i])
-                    i += 1
-            tokens = new_tokens
-        return tokens
-
-    def decode(self, token_ids: List[int]) -> str:
-        byte_chunks = []
-        for tid in token_ids:
-            if tid in self.inverse_special_tokens:
-                byte_chunks.append(self.inverse_special_tokens[tid].encode("utf-8"))
-            elif tid in self.vocab:
-                byte_chunks.append(self.vocab[tid])
-        all_bytes = b"".join(byte_chunks)
-        return all_bytes.decode("utf-8", errors="replace")
+    def decode(self, tokens: list) -> str:
+        raw_bytes = b""
+        clean_text = ""
+        for t in tokens:
+            if t in self.inverse_special:
+                if raw_bytes:
+                    clean_text += raw_bytes.decode("utf-8", errors="replace")
+                    raw_bytes = b""
+                clean_text += self.inverse_special[t]
+            elif t in self.vocab:
+                raw_bytes += self.vocab[t]
+            else:
+                raw_bytes += bytes([t % 256])
+                
+        if raw_bytes:
+            clean_text += raw_bytes.decode("utf-8", errors="replace")
+        return clean_text
 
     def save(self, filepath: str):
+        os.makedirs(os.path.dirname(filepath), exist_ok=True)
+        serializable_vocab = {str(k): v.hex() for k, v in self.vocab.items()}
+        data = {
+            "vocab_size": self.vocab_size,
+            "merges": {f"{k[0]},{k[1]}": v for k, v in self.merges.items()},
+            "special_tokens": self.special_tokens,
+            "vocab": serializable_vocab
+        }
         with open(filepath, "w") as f:
-            json.dump({
-                "target_vocab_size": self.target_vocab_size,
-                "special_tokens": self.special_tokens,
-                "merges": {f"{k[0]},{k[1]}": v for k, v in self.merges.items()}
-            }, f)
+            json.dump(data, f, indent=2)
 
     def load(self, filepath: str):
+        if not os.path.exists(filepath):
+            raise FileNotFoundError(f"Missing artifact: {filepath}")
         with open(filepath, "r") as f:
             data = json.load(f)
-        self.target_vocab_size = data["target_vocab_size"]
+        self.vocab_size = data["vocab_size"]
         self.special_tokens = data["special_tokens"]
-        self.inverse_special_tokens = {v: k for k, v in self.special_tokens.items()}
-        self.merges = {tuple(map(int, k.split(","))): v for k, v in data["merges"].items()}
-        self._init_vocab()
-        for pair, idx in self.merges.items():
-            p0 = self.vocab.get(pair[0], b"")
-            p1 = self.vocab.get(pair[1], b"")
-            self.vocab[idx] = p0 + p1
-            self.inverse_vocab[p0 + p1] = idx
+        self.inverse_special = {v: k for k, v in self.special_tokens.items()}
+        self.merges = {tuple(map(int, k.split(','))): v for k, v in data.get("merges", {}).items()}
+        self.vocab = {int(k): bytes.fromhex(v) for k, v in data.get("vocab", {}).items()}
+        return True

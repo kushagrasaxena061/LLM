@@ -5,7 +5,7 @@ from tokenizer.bpe import BPETokenizer
 from multimodal.pipeline import VisionLanguageAdapter, process_multimodal_input
 from rag.vector_store import SimpleVectorStore
 from rag.hybrid_search import HybridRetriever
-from rag.reranker import CrossEncoderReranker
+from rag.reranker import HeuristicLexicalReranker
 
 def test_e2e_multimodal_pipeline():
     """Phase 4 Verification: Image -> Vision Processing -> Projection -> LLM"""
@@ -29,19 +29,24 @@ def test_e2e_multimodal_pipeline():
 
 def test_e2e_hybrid_rag_pipeline():
     """Phase 4 Verification: BM25 -> RRF -> Reranking -> Output"""
+    import torch
+    from rag.vector_store import SimpleVectorStore
+    from rag.hybrid_search import HybridRetriever
+    from rag.reranker import HeuristicLexicalReranker
+    
     store = SimpleVectorStore(embedding_dim=16)
     docs = ["Test document about AI.", "Another document about networking."]
     store.add_texts(docs, torch.randn(2, 16))
-    
+
     hybrid = HybridRetriever(store)
     hybrid.fit_bm25(docs)
-    reranker = CrossEncoderReranker()
-    
+    reranker = HeuristicLexicalReranker()
+
     # 1. Hybrid Search
     candidates = hybrid.search("AI networking", torch.randn(16), top_k=2)
     assert len(candidates) == 2, "Hybrid search failed."
-    
+
     # 2. Rerank
-    final_docs = reranker.rerank("AI networking", candidates, top_k=1)
-    assert len(final_docs) == 1, "Reranker failed to filter top_k."
-    print("\n✅ E2E Hybrid RAG & Reranking verified.")
+    fmt_candidates = [(getattr(doc, "text", doc), score, doc) for doc, score in candidates]
+    final_docs = reranker.rerank_documents("AI networking", fmt_candidates, top_k=1)
+    assert len(final_docs) == 1, "Reranking failed."

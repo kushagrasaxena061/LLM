@@ -1,60 +1,52 @@
-# rag/hybrid_search.py
-"""Hybrid Retrieval combining Dense (Vector) and Sparse (BM25) search via RRF."""
-
 import torch
-from typing import List, Tuple, Dict
-from rank_bm25 import BM25Okapi
-from rag.vector_store import SimpleVectorStore
-from utils.logger import get_logger
-
-logger = get_logger(__name__)
+import math
+from collections import Counter
+from typing import List, Tuple
+from rag.vector_store import SimpleVectorStore, Document
 
 class HybridRetriever:
-    def __init__(self, vector_store: SimpleVectorStore):
+    def __init__(self, vector_store: SimpleVectorStore, embedding_engine=None):
         self.vector_store = vector_store
-        self.bm25 = None
-        self.tokenized_corpus = []
+        self.embedding_engine = embedding_engine
+        self.doc_freqs = Counter()
+        self.doc_lengths = []
+        self.avgdl = 0.0
 
-    def fit_bm25(self, texts: List[str]):
-        """Trains the BM25 sparse retriever on the document corpus."""
-        self.tokenized_corpus = [text.lower().split() for text in texts]
-        self.bm25 = BM25Okapi(self.tokenized_corpus)
-        logger.info("BM25 Sparse Retriever fitted", corpus_size=len(texts))
+    def fit_bm25(self, docs: List[Document]):
+        self.doc_lengths = [len(((d.text if hasattr(d, 'text') else d) if hasattr(d, 'text') else d).split()) for d in docs]
+        self.avgdl = sum(self.doc_lengths) / len(docs) if docs else 1.0
+        for d in docs:
+            self.doc_freqs.update(set(((d.text if hasattr(d, 'text') else d) if hasattr(d, 'text') else d).lower().split()))
 
-    def reciprocal_rank_fusion(self, dense_results: List[Tuple[str, float]], sparse_results: List[Tuple[str, float]], k: int = 60) -> List[Tuple[str, float]]:
-        """
-        Fuses dense and sparse rankings using Reciprocal Rank Fusion (RRF).
-        Formula: RRF_Score = 1 / (k + rank)
-        """
-        rrf_scores: Dict[str, float] = {}
-
-        # 1. Process dense ranks (Semantic matches)
-        for rank, (doc, _) in enumerate(dense_results):
-            rrf_scores[doc] = rrf_scores.get(doc, 0.0) + 1.0 / (k + rank + 1)
-
-        # 2. Process sparse ranks (Keyword matches)
-        for rank, (doc, _) in enumerate(sparse_results):
-            rrf_scores[doc] = rrf_scores.get(doc, 0.0) + 1.0 / (k + rank + 1)
-
-        # 3. Sort documents by their combined RRF score descending
-        fused = sorted(rrf_scores.items(), key=lambda item: item[1], reverse=True)
-        return fused
-
-    def search(self, query: str, query_embedding: torch.Tensor, top_k: int = 2) -> List[Tuple[str, float]]:
-        """Executes the dual-search pipeline and returns the fused top-k documents."""
-        # 1. Dense Search (Vector Embeddings)
-        # We retrieve all documents to properly rank them against the sparse results
+    def search(self, query: str, query_embedding: torch.Tensor, top_k: int = 3) -> List[Tuple[Document, float]]:
+        if not self.vector_store.documents: return []
+        if len(self.doc_lengths) != len(self.vector_store.documents):
+            self.fit_bm25(self.vector_store.documents)
+        
         dense_results = self.vector_store.similarity_search(query_embedding, top_k=len(self.vector_store.documents))
-
-        # 2. Sparse Search (BM25 Exact Keyword Match)
-        tokenized_query = query.lower().split()
-        sparse_scores = self.bm25.get_scores(tokenized_query)
         
-        sparse_results = [(self.vector_store.documents[i], score) for i, score in enumerate(sparse_scores)]
-        sparse_results.sort(key=lambda x: x[1], reverse=True)
+        q_terms = query.lower().split()
+        bm25_scores = []
+        N = len(self.vector_store.documents)
+        for i, doc in enumerate(self.vector_store.documents):
+            score = 0.0
+            d_terms = (doc.text if hasattr(doc, 'text') else doc).lower().split()
+            term_counts = Counter(d_terms)
+            for term in q_terms:
+                if term not in term_counts: continue
+                tf = term_counts[term]
+                df = self.doc_freqs.get(term, 0)
+                idf = math.log(1 + (N - df + 0.5) / (df + 0.5))
+                score += idf * (tf * 2.5) / (tf + 1.5 * (0.25 + 0.75 * self.doc_lengths[i] / self.avgdl))
+            bm25_scores.append((doc, score))
 
-        # 3. Fuse Rankings via RRF
-        fused_results = self.reciprocal_rank_fusion(dense_results, sparse_results)
+        rrf_scores = {doc.id: 0.0 for doc in self.vector_store.documents}
+        for rank, (doc, _) in enumerate(dense_results):
+            rrf_scores[doc.id] += 1.0 / (60 + rank + 1)
         
-        logger.info("Hybrid search completed")
-        return fused_results[:top_k]
+        bm25_scores.sort(key=lambda x: x[1], reverse=True)
+        for rank, (doc, _) in enumerate(bm25_scores):
+            rrf_scores[doc.id] += 1.0 / (60 + rank + 1)
+
+        fused = sorted(self.vector_store.documents, key=lambda d: rrf_scores[d.id], reverse=True)
+        return [(doc, rrf_scores[doc.id]) for doc in fused[:top_k]]

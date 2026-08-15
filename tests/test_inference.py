@@ -27,7 +27,7 @@ def test_generation_pipeline():
     
     # Run generation
     prompt = "The quick"
-    output = generate_text(model, tokenizer, prompt, max_new_tokens=5, device=env_config.device)
+    output = generate_text(model, tokenizer, prompt, max_new_tokens=5, device=env_config.device, return_full_text=True)
     
     assert isinstance(output, str), "Generation did not return a string!"
     assert len(output) > len(prompt), "Generation failed to append new tokens!"

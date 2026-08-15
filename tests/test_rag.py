@@ -29,6 +29,6 @@ def test_vector_store_retrieval():
     assert len(results) == 1, "Retrieval did not return the requested top_k results!"
     retrieved_text, score = results[0]
     
-    assert retrieved_text == docs[0], "Retrieved wrong document chunk!"
+    assert getattr(retrieved_text, 'text', retrieved_text) == docs[0], "Retrieved wrong document chunk!"
     print(f"\n✅ RAG Vector Retrieval Passed! Top match score: {score:.4f}")
     print(f"   - Retrieved Chunk: '{retrieved_text}'")

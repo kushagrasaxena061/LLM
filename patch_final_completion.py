@@ -1,3 +1,4 @@
+from evaluation.embeddings import EmbeddingEngine
 import os
 import re
 
@@ -14,7 +15,7 @@ with open(frontend_path, "r") as f:
 if "from model.config import canonical_151m_config" not in app_code:
     app_code = app_code.replace(
         "from model.config import GPTConfig",
-        "from model.config import GPTConfig, canonical_151m_config\nfrom rag.hybrid_search import HybridRetriever\nfrom rag.reranker import CrossEncoderReranker"
+        "from model.config import GPTConfig, canonical_151m_config\nfrom rag.hybrid_search import HybridRetriever\nfrom rag.reranker import HeuristicLexicalReranker"
     )
 
 # Fix 2: Replace tiny config with canonical_151m_config in load_components()
@@ -40,7 +41,7 @@ rag_setup_new = """    vector_store = SimpleVectorStore(embedding_dim=canonical_
     
     hybrid_retriever = HybridRetriever(vector_store)
     hybrid_retriever.fit_bm25(docs)
-    reranker = CrossEncoderReranker()
+    reranker = HeuristicLexicalReranker()
     
     rag_pipeline = RAGPipeline(vector_store, model, tokenizer, env_config.device)
     rag_pipeline.hybrid_retriever = hybrid_retriever # Attach to pipeline
@@ -91,7 +92,7 @@ from tokenizer.bpe import BPETokenizer
 from multimodal.pipeline import VisionLanguageAdapter, process_multimodal_input
 from rag.vector_store import SimpleVectorStore
 from rag.hybrid_search import HybridRetriever
-from rag.reranker import CrossEncoderReranker
+from rag.reranker import HeuristicLexicalReranker
 
 def test_e2e_multimodal_pipeline():
     \"\"\"Phase 4 Verification: Image -> Vision Processing -> Projection -> LLM\"\"\"
@@ -120,7 +121,7 @@ def test_e2e_hybrid_rag_pipeline():
     
     hybrid = HybridRetriever(store)
     hybrid.fit_bm25(docs)
-    reranker = CrossEncoderReranker()
+    reranker = HeuristicLexicalReranker()
     
     # 1. Hybrid Search
     candidates = hybrid.search("AI networking", torch.randn(16), top_k=2)
@@ -154,7 +155,7 @@ docs = {
 ## Infrastructure Capabilities
 - Custom BPE Tokenizer (Lossless UTF-8)
 - $O(N)$ KV-Cache Autoregressive Generation
-- Hybrid RAG (Dense + BM25 + Reciprocal Rank Fusion + CrossEncoder Reranking)
+- Hybrid RAG (Dense + BM25 + Reciprocal Rank Fusion + heuristic reranking)
 - LoRA Parameter-Efficient Fine-Tuning
 - INT8 Post-Training Quantization
 - Multimodal Vision-Language Projection Adapter

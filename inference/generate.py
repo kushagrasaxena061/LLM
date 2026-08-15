@@ -1,68 +1,88 @@
-# inference/generate.py
-"""Autoregressive text generation engine with KV cache and stop-token support."""
-
+"""Autoregressive text generation with KV-cache and ChatML handling."""
 import torch
 from typing import List, Optional
-import torch.nn.functional as F
 
 @torch.no_grad()
 def generate_text(
     model,
     tokenizer,
     prompt: str,
-    max_new_tokens: int = 30,
-    device: str = "cpu",
+    max_new_tokens: int = 50,
     temperature: float = 1.0,
     top_k: Optional[int] = None,
-    stop_tokens: Optional[List[str]] = None,
-    use_cache: bool = True
+    top_p: Optional[float] = None,
+    stop_tokens: Optional[List[int]] = None,
+    device: str = "cpu",
+    return_full_text: bool = False
 ) -> str:
     model.eval()
-    token_ids = tokenizer.encode(prompt)
-    if not token_ids:
-        token_ids = [0]
-        
-    idx = torch.tensor([token_ids], dtype=torch.long, device=device)
-    past_key_values = None
-    generated_tokens = []
+    was_training = model.training
     
-    stop_token_ids = []
-    if stop_tokens:
-        for st in stop_tokens:
-            if st in tokenizer.special_tokens:
-                stop_token_ids.append(tokenizer.special_tokens[st])
-            else:
-                encoded_st = tokenizer.encode(st)
-                if encoded_st:
-                    stop_token_ids.append(encoded_st[0])
+    token_ids = tokenizer.encode(prompt)
+    input_ids = torch.tensor([token_ids], dtype=torch.long, device=device)
+    
+    # Resolve stop tokens dynamically (automatically fetch EOS and ChatML endings)
+    if stop_tokens is None:
+        stop_tokens = []
+        if hasattr(tokenizer, "special_tokens"):
+            if "<|endoftext|>" in tokenizer.special_tokens:
+                stop_tokens.append(tokenizer.special_tokens["<|endoftext|>"])
+            if "<|im_end|>" in tokenizer.special_tokens:
+                stop_tokens.append(tokenizer.special_tokens["<|im_end|>"])
 
-    for step in range(max_new_tokens):
-        if use_cache:
-            if past_key_values is None:
-                logits, _, past_key_values = model(idx, use_cache=True, start_pos=0)
-            else:
-                start_pos = past_key_values[0][0].shape[2]
-                logits, _, past_key_values = model(idx[:, -1:], past_key_values=past_key_values, use_cache=True, start_pos=start_pos)
-        else:
-            logits, _, _ = model(idx, use_cache=False)
-            
+    generated_tokens = []
+    past_key_values = None
+    curr_input = input_ids
+    
+    for _ in range(max_new_tokens):
+        logits, _, past_key_values = model(curr_input, past_key_values=past_key_values, use_cache=True)
         next_token_logits = logits[:, -1, :]
         
-        if temperature <= 0.0:
+        # Deterministic greedy decoding
+        if temperature == 0.0:
             next_token = torch.argmax(next_token_logits, dim=-1, keepdim=True)
         else:
+            # Temperature scaling
             next_token_logits = next_token_logits / temperature
+            
+            # Top-K
             if top_k is not None:
                 v, _ = torch.topk(next_token_logits, min(top_k, next_token_logits.size(-1)))
                 next_token_logits[next_token_logits < v[:, [-1]]] = -float('Inf')
-            probs = F.softmax(next_token_logits, dim=-1)
-            next_token = torch.multinomial(probs, num_samples=1)
+                
+            # Top-P
+            if top_p is not None:
+                sorted_logits, sorted_indices = torch.sort(next_token_logits, descending=True)
+                cumulative_probs = torch.cumsum(torch.softmax(sorted_logits, dim=-1), dim=-1)
+                sorted_indices_to_remove = cumulative_probs > top_p
+                sorted_indices_to_remove[..., 1:] = sorted_indices_to_remove[..., :-1].clone()
+                sorted_indices_to_remove[..., 0] = 0
+                indices_to_remove = sorted_indices_to_remove.scatter(1, sorted_indices, sorted_indices_to_remove)
+                next_token_logits[indices_to_remove] = -float('Inf')
             
-        token_id = next_token.item()
-        if token_id in stop_token_ids:
+            probs = torch.softmax(next_token_logits, dim=-1)
+            next_token = torch.multinomial(probs, num_samples=1)
+        
+        token_val = next_token.item()
+        
+        # Strict EOS / Stop Token enforcement
+        if token_val in stop_tokens:
             break
             
-        generated_tokens.append(token_id)
-        idx = torch.cat([idx, next_token], dim=1)
+        generated_tokens.append(token_val)
+        curr_input = next_token
         
-    return tokenizer.decode(token_ids + generated_tokens)
+    if was_training:
+        model.train()
+        
+    # Dedicated assistant-response extraction mechanism:
+    # Decode only the generated tokens, entirely avoiding the prompt 
+    # (and its ChatML tags) from leaking into the output.
+    if return_full_text:
+        return tokenizer.decode(token_ids + generated_tokens)
+    else:
+        clean_response = tokenizer.decode(generated_tokens)
+        # Failsafe against model hallucinating structural tags
+        for st in ["<|im_start|>", "<|im_end|>", "<|endoftext|>"]:
+            clean_response = clean_response.replace(st, "")
+        return clean_response.strip()

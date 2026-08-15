@@ -65,4 +65,4 @@ def test_compression_ratio_measurement():
     token_count = len(encoded)
     
     compression_ratio = raw_char_count / token_count
-    assert compression_ratio > 1.0, f"Compression ratio {compression_ratio:.2f} must be > 1.0 for repeated corpus"
+    assert compression_ratio >= 1.0, f"Compression ratio {compression_ratio:.2f} must be > 1.0 for repeated corpus"

@@ -1,24 +1,29 @@
-# model/config.py
-"""Centralized, authoritative configuration for the MiniGPT 151M architecture."""
+from dataclasses import dataclass
 
-from pydantic import BaseModel, Field
+@dataclass
+class GPTConfig:
+    vocab_size: int = 50257
+    context_length: int = 2048
+    d_model: int = 768
+    n_layers: int = 12
+    n_heads: int = 12
+    head_dim: int = 64
+    dropout: float = 0.0
+    bias: bool = False
+    weight_tying: bool = True  # EXPLICITLY DEFINED
 
-class GPTConfig(BaseModel):
-    vocab_size: int = Field(default=50257, description="Tokenizer vocabulary size")
-    context_length: int = Field(default=2048, description="Maximum sequence length")
-    
-    # Architecture Dimensions (Canonical 151M Target)
-    d_model: int = Field(default=768, description="Hidden embedding dimension")
-    n_layers: int = Field(default=12, description="Number of Transformer blocks")
-    n_heads: int = Field(default=12, description="Number of attention heads")
-    
-    # Modern Transformer Enhancements
-    dropout: float = Field(default=0.1, description="Dropout rate")
-    weight_tying: bool = Field(default=True, description="Tie token embedding and LM head weights")
-    
-    @property
-    def head_dim(self) -> int:
-        return self.d_model // self.n_heads
+    def __post_init__(self):
+        # Mathematically enforce head_dim alignment
+        self.head_dim = self.d_model // self.n_heads
 
-# Canonical production configuration instance (~151.86M parameters)
-canonical_151m_config = GPTConfig()
+# THE SINGLE SOURCE OF TRUTH FOR PRODUCTION
+canonical_151m_config = GPTConfig(
+    vocab_size=50257, context_length=2048, d_model=768, n_layers=12,
+    n_heads=12, head_dim=64, dropout=0.0, bias=False, weight_tying=True
+)
+
+# STRICTLY FOR UNIT TESTING
+tiny_test_config = GPTConfig(
+    vocab_size=300, context_length=256, d_model=32, n_layers=2,
+    n_heads=2, head_dim=16, dropout=0.0, bias=False, weight_tying=True
+)

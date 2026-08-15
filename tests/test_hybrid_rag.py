@@ -34,7 +34,7 @@ def test_hybrid_retrieval_rrf():
     top_doc, rrf_score = results[0]
     
     # The BM25 algorithm should force the FastAPI document to the top due to keyword overlaps
-    assert "FastAPI" in top_doc, "Hybrid search failed to boost the BM25 exact keyword match!"
+    assert "FastAPI" in getattr(top_doc, "text", top_doc), "Hybrid search failed to boost the BM25 exact keyword match!"
     
     print(f"\n✅ Advanced RAG (Hybrid Search + RRF) Test Passed!")
     print(f"   - Query: '{query}'")
