@@ -1,5 +1,6 @@
 import copy
 import torch
+import os
 if hasattr(torch.backends, 'quantized') and torch.backends.mps.is_available():
     torch.backends.quantized.engine = 'qnnpack'
 # frontend/app.py
@@ -42,13 +43,40 @@ API_BASE_URL = "http://localhost:8000"
 
 @st.cache_resource
 def load_components():
+    import glob
     config = canonical_151m_config
     model = GPT(config).to(env_config.device)
-    model.eval()
 
+    # 1. Load the production BPE tokenizer
+    tokenizer_path = "production_151m_bpe.json"
     tokenizer = BPETokenizer(vocab_size=config.vocab_size)
-    full_vocab = "The quick brown fox jumps over the lazy dog. FastAPI is a modern web framework. "
-    tokenizer.train(full_vocab)
+    if os.path.exists(tokenizer_path):
+        tokenizer.load(tokenizer_path)
+    else:
+        full_vocab = "The quick brown fox jumps over the lazy dog. FastAPI is a modern web framework. "
+        tokenizer.train(full_vocab)
+
+    # 2. Automatically load the latest trained checkpoint from production_checkpoints/
+    ckpt_files = sorted(glob.glob("production_checkpoints/*.pt"), key=os.path.getmtime)
+    if ckpt_files:
+        latest_ckpt = ckpt_files[-1]
+        try:
+            from training.checkpoint import load_checkpoint
+            load_checkpoint(latest_ckpt, model, map_location=env_config.device)
+            st.sidebar.success(f"Active Checkpoint: `{os.path.basename(latest_ckpt)}`")
+        except Exception:
+            state = torch.load(latest_ckpt, map_location=env_config.device, weights_only=False)
+            if isinstance(state, dict) and "model_state" in state:
+                model = quantize_model_to_int8(model)
+                model.load_state_dict(state["model_state"])
+            elif isinstance(state, dict):
+                model = quantize_model_to_int8(model)
+                model.load_state_dict(state)
+            st.sidebar.success(f"Active Checkpoint: `{os.path.basename(latest_ckpt)}`")
+    else:
+        st.sidebar.warning("No checkpoint found in production_checkpoints/. Using base initialized weights.")
+
+    model.eval()
 
     embedding_engine = EmbeddingEngine(model, tokenizer)
     persona_manager = PersonaManager()
@@ -57,7 +85,7 @@ def load_components():
     optimizer = PromptOptimizer(tokenizer)
     vision_adapter = VisionLanguageAdapter(vision_dim=512, llm_dim=config.d_model).to(env_config.device)
 
-    # REAL RAG (No random tensors)
+    # Vector store setup
     vector_store = SimpleVectorStore(embedding_dim=config.d_model)
     docs = [
         Document(id="1", text="FastAPI handles our secure backend by acting as the API layer.", metadata={"source": "system"}),
@@ -78,7 +106,6 @@ def load_components():
     rag_pipeline = RAGPipeline(hybrid, reranker, model, tokenizer, embedding_engine, env_config.device)
 
     return model, tokenizer, rag_pipeline, optimizer, vision_adapter, persona_manager, safety_evaluator, embedding_engine, chat_manager
-
 model, tokenizer, rag_pipeline, optimizer, vision_adapter, persona_manager, safety_evaluator, embedding_engine, chat_manager = load_components() 
 
 st.sidebar.title("🧠 MiniGPT Studio")

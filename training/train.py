@@ -109,6 +109,7 @@ def train_production_151m(
     # ----------------------------------------------------
     # Production Training Loop
     # ----------------------------------------------------
+    print("DEBUG: Dataset loaded, entering training loop now...")
     for step in range(start_step, max_steps):
         # Periodic Validation & Logging
         if step % eval_interval == 0:

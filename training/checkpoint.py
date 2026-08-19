@@ -46,7 +46,7 @@ def load_checkpoint(filepath, model, optimizer=None, scheduler=None, scaler=None
     if 'rng_numpy' in state:
         np.random.set_state(state['rng_numpy'])
     if 'rng_torch' in state:
-        torch.set_rng_state(state['rng_torch'])
+        torch.set_rng_state(state['rng_torch'].cpu())
     if 'rng_cuda' in state and torch.cuda.is_available():
         torch.cuda.set_rng_state_all(state['rng_cuda'])
         

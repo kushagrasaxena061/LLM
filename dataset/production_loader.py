@@ -34,12 +34,11 @@ class ShardedTextStreamingDataset(IterableDataset):
         """Streams raw token IDs from file shards line by line."""
         for shard_path in self.shard_paths:
             with open(shard_path, "r", encoding="utf-8", errors="ignore") as f:
-                for line in f:
-                    line = line.strip()
-                    if not line:
-                        continue
-                    token_ids = self.tokenizer.encode(line)
-                    for tid in token_ids:
+                while True:
+                    chunk = f.read(8192)
+                    if not chunk:
+                        break
+                    for tid in self.tokenizer.encode(chunk):
                         yield tid
 
     def __iter__(self) -> Iterator[Tuple[torch.Tensor, torch.Tensor]]:

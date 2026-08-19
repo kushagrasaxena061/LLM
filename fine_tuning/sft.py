@@ -80,7 +80,7 @@ def run_sft_training(model: GPT, tokenizer: BaseTokenizer, dataset_samples: List
     
     for epoch in range(epochs):
         total_loss = 0.0
-        for x, y in dataloader:
+        for step, (x, y) in enumerate(dataloader):
             x, y = x.to(device), y.to(device)
             optimizer.zero_grad(set_to_none=True)
             
@@ -89,7 +89,10 @@ def run_sft_training(model: GPT, tokenizer: BaseTokenizer, dataset_samples: List
             
             loss.backward()
             optimizer.step()
+            if hasattr(torch.mps, 'empty_cache'): torch.mps.empty_cache()
             total_loss += loss.item()
+            if step % 5 == 0:
+                logger.info(f"Epoch {epoch+1} | Batch {step}/{len(dataloader)} | Loss: {loss.item():.4f}")
             
         logger.info(f"Epoch {epoch+1}/{epochs} completed", avg_loss=f"{total_loss / len(dataloader):.4f}")
         

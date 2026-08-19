@@ -98,6 +98,8 @@ def main():
             optimizer.step()
             
         scheduler.step()
+        if step > 0 and step % 10 == 0:
+            print(f"Step {step} | Loss: {loss.item():.4f}")
         
         loss_val = loss.item()
         if initial_loss is None:
